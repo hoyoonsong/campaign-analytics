@@ -61,7 +61,7 @@ async function fetchAllRows<T extends Record<string, unknown>>(
       .select(columns)
       .range(from, from + pageSize - 1);
     if (error) throw new Error(`${table}: ${error.message}`);
-    const batch = (data ?? []) as T[];
+    const batch = (data ?? []) as unknown as T[];
     out.push(...batch);
     if (batch.length < pageSize) break;
   }

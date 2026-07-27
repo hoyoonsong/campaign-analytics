@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, requireCampaignUser } from '../_lib/auth';
-import { buildLeanSyncPayload, campaignAdminClient } from '../_lib/campaign';
+import { json, requireCampaignUser } from '../_lib/auth.js';
+import { buildLeanSyncPayload, campaignAdminClient } from '../_lib/campaign.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
@@ -84,12 +84,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Sync failed';
-    await ctx.voter
-      .from('campaign_sync_state')
-      .update({ last_error: message, updated_at: new Date().toISOString() })
-      .eq('id', 1)
-      .then(() => undefined)
-      .catch(() => undefined);
+    try {
+      await ctx.voter
+        .from('campaign_sync_state')
+        .update({ last_error: message, updated_at: new Date().toISOString() })
+        .eq('id', 1);
+    } catch {
+      /* ignore secondary write failure */
+    }
     return json(res, 500, { error: message });
   }
 }

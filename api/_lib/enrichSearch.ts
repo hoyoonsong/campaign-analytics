@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { geocodeVoterAddress } from './geo';
+import { geocodeVoterAddress } from './geo.js';
 
 type AnyOfRule = {
   field: string;
@@ -224,7 +224,7 @@ export async function loadLeanGeo(
 /** @deprecated Prefer loadLeanGeo — kept for callers that still need live FormHandler. */
 export async function loadCampaignGeo(): Promise<GeoPoint[]> {
   try {
-    const { campaignAdminClient } = await import('./campaign');
+    const { campaignAdminClient } = await import('./campaign.js');
     const campaign = campaignAdminClient();
     const pageSize = 1000;
     const points: GeoPoint[] = [];

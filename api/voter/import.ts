@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, readBody, requireCampaignUser } from '../_lib/auth';
+import { json, readBody, requireCampaignUser } from '../_lib/auth.js';
 
 type ImportRow = Record<string, unknown>;
 

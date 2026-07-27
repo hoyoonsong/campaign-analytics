@@ -1,4 +1,4 @@
-import type { AuthedContext } from './auth';
+import type { AuthedContext } from './auth.js';
 
 function capMetadata(meta: unknown): Record<string, unknown> {
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return {};

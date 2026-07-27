@@ -1,10 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, readBody, requireCampaignUser } from '../_lib/auth';
+import { json, readBody, requireCampaignUser } from '../_lib/auth.js';
 import {
   findNearestCampaignPin,
   loadVoterCoords,
   type NearbyKind,
-} from '../_lib/nearestCampaign';
+} from '../_lib/nearestCampaign.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);

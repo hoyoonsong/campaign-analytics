@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, requireCampaignUser } from '../_lib/auth';
+import { json, requireCampaignUser } from '../_lib/auth.js';
 
 function shapeOptions(d: Record<string, unknown>) {
   const asStrings = (v: unknown): string[] =>

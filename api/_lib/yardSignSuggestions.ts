@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { campaignAdminClient } from './campaign';
-import { milesBetween } from './geo';
+import { campaignAdminClient } from './campaign.js';
+import { milesBetween } from './geo.js';
 
 export type YardSignSuggestion = {
   rank: number;

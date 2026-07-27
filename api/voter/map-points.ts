@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, readBody, requireCampaignUser } from '../_lib/auth';
+import { json, readBody, requireCampaignUser } from '../_lib/auth.js';
 
 type GeoKind = 'volunteer' | 'yard_sign';
 
@@ -44,17 +44,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const campaign_geo: CampaignGeoPoint[] = (geoRes.data ?? [])
     .filter(
-      (g): g is CampaignGeoPoint =>
+      (g) =>
         (g.kind === 'volunteer' || g.kind === 'yard_sign') &&
         typeof g.source_id === 'string' &&
         typeof g.lat === 'number' &&
         typeof g.lng === 'number',
     )
     .map((g) => ({
-      source_id: g.source_id,
+      source_id: g.source_id as string,
       kind: g.kind as GeoKind,
-      lat: g.lat,
-      lng: g.lng,
+      lat: g.lat as number,
+      lng: g.lng as number,
       name: g.name ?? null,
       email: g.email ?? null,
       phone: g.phone ?? null,

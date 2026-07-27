@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { campaignAdminClient } from './campaign';
-import { geocodeVoterAddress, milesBetween } from './geo';
+import { campaignAdminClient } from './campaign.js';
+import { geocodeVoterAddress, milesBetween } from './geo.js';
 
 export type NearbyKind = 'yard_sign' | 'volunteer';
 
@@ -84,7 +84,7 @@ async function fetchPins(kind: NearbyKind): Promise<
       .not('lng', 'is', null)
       .range(from, from + pageSize - 1);
     if (error) throw new Error(error.message);
-    const batch = data ?? [];
+    const batch = (data ?? []) as unknown as Array<Record<string, unknown>>;
     for (const row of batch) {
       const lat = Number(row.lat);
       const lng = Number(row.lng);
