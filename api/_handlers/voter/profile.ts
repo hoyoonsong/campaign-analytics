@@ -1,15 +1,15 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, readBody, requireCampaignUser } from '../_lib/auth.js';
+import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
 import {
   campaignAdminClient,
   fetchCampaignPersonDetail,
   normalizeEmail,
-} from '../_lib/campaign.js';
+} from '../../_lib/campaign.js';
 import {
   enrichSearchRows,
   loadLeanGeo,
   nearestMiles,
-} from '../_lib/enrichSearch.js';
+} from '../../_lib/enrichSearch.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);

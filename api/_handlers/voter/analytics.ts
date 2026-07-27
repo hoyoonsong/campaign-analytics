@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, readBody, requireCampaignUser } from '../_lib/auth.js';
+import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
 
 function isEmptyFilters(filters: unknown): boolean {
   if (filters == null) return true;

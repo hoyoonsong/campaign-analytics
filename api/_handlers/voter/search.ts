@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, readBody, requireCampaignUser } from '../_lib/auth.js';
-import { buildLeanSyncPayload, campaignAdminClient } from '../_lib/campaign.js';
-import { enrichSearchRows } from '../_lib/enrichSearch.js';
+import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
+import { buildLeanSyncPayload, campaignAdminClient } from '../../_lib/campaign.js';
+import { enrichSearchRows } from '../../_lib/enrichSearch.js';
 
 /** Populate lean geo pins from FormHandler when nearby filters need them. */
 async function ensureLeanGeo(

@@ -47,22 +47,22 @@ function wrap(load: () => Promise<VercelHandler>) {
 }
 
 const ROUTES: [string, string][] = [
-  ['/api/voter/analytics', 'voter/analytics.ts'],
-  ['/api/voter/search', 'voter/search.ts'],
-  ['/api/voter/export', 'voter/export.ts'],
-  ['/api/voter/import', 'voter/import.ts'],
-  ['/api/voter/import-batches', 'voter/import-batches.ts'],
-  ['/api/voter/undo-import', 'voter/undo-import.ts'],
-  ['/api/voter/delete', 'voter/delete.ts'],
-  ['/api/voter/usage', 'voter/usage.ts'],
-  ['/api/voter/filter-options', 'voter/filter-options.ts'],
-  ['/api/voter/map-points', 'voter/map-points.ts'],
-  ['/api/voter/universes', 'voter/universes.ts'],
-  ['/api/voter/profile', 'voter/profile.ts'],
-  ['/api/voter/nearby', 'voter/nearby.ts'],
-  ['/api/voter/yard-sign-suggestions', 'voter/yard-sign-suggestions.ts'],
-  ['/api/voter/activity', 'voter/activity.ts'],
-  ['/api/voter/sync-campaign', 'voter/sync-campaign.ts'],
+  ['/api/voter/analytics', '_handlers/voter/analytics.ts'],
+  ['/api/voter/search', '_handlers/voter/search.ts'],
+  ['/api/voter/export', '_handlers/voter/export.ts'],
+  ['/api/voter/import', '_handlers/voter/import.ts'],
+  ['/api/voter/import-batches', '_handlers/voter/import-batches.ts'],
+  ['/api/voter/undo-import', '_handlers/voter/undo-import.ts'],
+  ['/api/voter/delete', '_handlers/voter/delete.ts'],
+  ['/api/voter/usage', '_handlers/voter/usage.ts'],
+  ['/api/voter/filter-options', '_handlers/voter/filter-options.ts'],
+  ['/api/voter/map-points', '_handlers/voter/map-points.ts'],
+  ['/api/voter/universes', '_handlers/voter/universes.ts'],
+  ['/api/voter/profile', '_handlers/voter/profile.ts'],
+  ['/api/voter/nearby', '_handlers/voter/nearby.ts'],
+  ['/api/voter/yard-sign-suggestions', '_handlers/voter/yard-sign-suggestions.ts'],
+  ['/api/voter/activity', '_handlers/voter/activity.ts'],
+  ['/api/voter/sync-campaign', '_handlers/voter/sync-campaign.ts'],
 ];
 
 /** Express app with /api routes — mount in Vite or listen standalone. */

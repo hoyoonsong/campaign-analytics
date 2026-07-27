@@ -5,6 +5,7 @@
   "framework": "vite",
   "regions": ["iad1"],
   "rewrites": [
+    { "source": "/api/voter/:slug", "destination": "/api/router?slug=:slug" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

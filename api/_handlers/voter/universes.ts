@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, readBody, requireCampaignUser } from '../_lib/auth.js';
-import { withTagMeta } from '../_lib/enrichSearch.js';
+import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
+import { withTagMeta } from '../../_lib/enrichSearch.js';
 
 async function recomputeTags(voter: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

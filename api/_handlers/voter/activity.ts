@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { json, readBody, requireCampaignUser } from '../_lib/auth.js';
-import { logActivityServer } from '../_lib/log.js';
+import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
+import { logActivityServer } from '../../_lib/log.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
