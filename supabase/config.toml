@@ -1,0 +1,11 @@
+# Voter Analytics Supabase project — separate from campaign-form-handler.
+# Link with: supabase link --project-ref <VOTER_PROJECT_REF>
+# Apply with: supabase db push
+
+project_id = "voter-analytics"
+
+[api]
+enabled = true
+
+[db]
+major_version = 17
