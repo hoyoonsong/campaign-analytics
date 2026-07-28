@@ -128,6 +128,21 @@ function buildExcludeCatalog(opts: FilterOptions): AttrGroup[] {
 
   return [
     {
+      id: "tags",
+      label: "Tags",
+      attrs: [
+        {
+          key: "supporter_tag",
+          label: "Supporter tag",
+          kind: "multi",
+          values: TAG_OPTIONS.map((t) => t.value),
+          valueLabels: Object.fromEntries(
+            TAG_OPTIONS.map((t) => [t.value, t.label]),
+          ),
+        },
+      ],
+    },
+    {
       id: "petitions",
       label: "Petitions",
       attrs: [
@@ -1167,6 +1182,7 @@ function ExcludeProfilesSection({
   const [search, setSearch] = useState("");
   const [draftAttr, setDraftAttr] = useState<ExcludeAttrKey | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
+    tags: true,
     petitions: true,
     activity: true,
     convos: true,

@@ -50,6 +50,7 @@ const files = [
   'supabase/migrations/0030_presence_cache.sql',
   'supabase/migrations/0031_analytics_cache_geo_contacts.sql',
   'supabase/migrations/0032_search_speed.sql',
+  'supabase/migrations/0033_exclude_supporter_tag.sql',
 ];
 
 const sql = files

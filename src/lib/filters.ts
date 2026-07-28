@@ -113,6 +113,7 @@ export function toFilterPayload(f: VoterFilters): Record<string, unknown> {
   put('exclude_state', ex.state);
   put('exclude_status', ex.status);
   put('exclude_signed', ex.signed);
+  put('exclude_supporter_tag', ex.supporter_tag);
   put('exclude_alignment_label', ex.alignment_label);
   put('exclude_yard_sign', ex.yard_sign);
   put('exclude_volunteer_interest', ex.volunteer_interest);
@@ -144,6 +145,7 @@ export function filtersActive(f: VoterFilters): boolean {
 
 const ARRAY_EXCLUDE_KEYS: ExcludeAttrKey[] = [
   'signed',
+  'supporter_tag',
   'alignment_label',
   'yard_sign',
   'volunteer_interest',
@@ -333,6 +335,7 @@ export function summarizeFilters(f: VoterFilters): string[] {
     );
     parts.push(`Exclude signed: ${labels.join(', ')}`);
   }
+  tag('Exclude tag', ex.supporter_tag);
   tag('Exclude county', ex.county);
   tag('Exclude party', ex.party);
   tag('Exclude city', ex.city);

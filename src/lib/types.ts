@@ -17,6 +17,7 @@ export type SignedPetitionKey =
 /** Attributes that can be used in the Exclude Profiles builder (mirrors include filters). */
 export type ExcludeAttrKey =
   | 'signed'
+  | 'supporter_tag'
   | 'alignment_label'
   | 'yard_sign'
   | 'volunteer_interest'
@@ -41,6 +42,8 @@ export type ExcludeAttrKey =
 
 export type ExcludeRules = {
   signed?: SignedPetitionKey[];
+  /** Exclude people with these supporter tags (supporter / maybe / opposed). */
+  supporter_tag?: string[];
   alignment_label?: string[];
   yard_sign?: string[];
   volunteer_interest?: string[];
