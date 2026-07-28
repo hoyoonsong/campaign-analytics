@@ -52,6 +52,7 @@ const files = [
   'supabase/migrations/0032_search_speed.sql',
   'supabase/migrations/0033_exclude_supporter_tag.sql',
   'supabase/migrations/0034_petition_venn.sql',
+  'supabase/migrations/0035_filter_options_idaho_cities.sql',
 ];
 
 const sql = files

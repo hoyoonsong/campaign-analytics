@@ -363,6 +363,8 @@ export function clearClientDataCaches() {
     sessionStorage.removeItem('analytics_summary_empty_v2');
     sessionStorage.removeItem('analytics_summary_empty_v3');
     sessionStorage.removeItem('voter_filter_options_v1');
+    sessionStorage.removeItem('voter_filter_options_v2');
+    sessionStorage.removeItem('voter_filter_options_v3');
   } catch {
     /* ignore */
   }
@@ -394,13 +396,26 @@ export function fetchUsage() {
 }
 
 export async function fetchFilterOptions() {
-  const cacheKey = 'voter_filter_options_v1';
+  const cacheKey = 'voter_filter_options_v3';
   if (typeof sessionStorage !== 'undefined') {
     try {
+      sessionStorage.removeItem('voter_filter_options_v1');
+      sessionStorage.removeItem('voter_filter_options_v2');
       const raw = sessionStorage.getItem(cacheKey);
       if (raw) {
         const parsed = JSON.parse(raw) as { at: number; data: FilterOptionsCache };
-        if (Date.now() - parsed.at < 30 * 60 * 1000 && parsed.data) {
+        const cities = parsed.data?.cities;
+        // Reject legacy truncated lists (RPC used to stop at 500 A–… names).
+        const usable =
+          Array.isArray(cities) &&
+          cities.length > 0 &&
+          cities.length !== 500 &&
+          cities.some((c) => /preston/i.test(String(c)));
+        if (
+          Date.now() - parsed.at < 30 * 60 * 1000 &&
+          parsed.data &&
+          usable
+        ) {
           return parsed.data;
         }
       }
