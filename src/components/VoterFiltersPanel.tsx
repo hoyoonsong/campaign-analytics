@@ -20,6 +20,10 @@ import {
   summarizeFilters,
 } from "../lib/filters";
 import {
+  idahoCityOptions,
+  idahoCountyOptions,
+} from "../lib/idahoPlaces";
+import {
   SUPPORT_SCORE_LABELS,
   summarizeAnyOfRule,
 } from "../lib/supporterPresets";
@@ -80,12 +84,14 @@ function mergeOptions(
       return fromApi.map(String);
     return FALLBACK_FILTER_OPTIONS[key];
   };
+  const apiCounties = pick("counties");
+  const apiCities = pick("cities");
   return {
-    counties: pick("counties"),
+    counties: idahoCountyOptions(apiCounties),
     parties: pick("parties"),
     statuses: pick("statuses"),
     states: pick("states"),
-    cities: pick("cities"),
+    cities: idahoCityOptions(apiCities),
     alignment_labels: pick("alignment_labels"),
     yard_signs: pick("yard_signs"),
     volunteer_interests: pick("volunteer_interests"),
@@ -416,11 +422,18 @@ export function VoterFiltersPanel({
   onChange,
   options,
   matchCount,
+  /** When true, render as a slide-over drawer (controlled by `open`). */
+  asDrawer = false,
+  open = true,
+  onClose,
 }: {
   filters: VoterFilters;
   onChange: (next: VoterFilters) => void;
   options: FilterOptions;
   matchCount?: number | null;
+  asDrawer?: boolean;
+  open?: boolean;
+  onClose?: () => void;
 }) {
   const opts = mergeOptions(options);
   const [draftField, setDraftField] = useState<FilterAnyOfField | "">(
@@ -435,6 +448,42 @@ export function VoterFiltersPanel({
     !q || labels.some((l) => l.toLowerCase().includes(q));
 
   const activeChips = useMemo(() => summarizeFilters(filters), [filters]);
+
+  useEffect(() => {
+    if (!asDrawer || !open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose?.();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [asDrawer, open, onClose]);
+
+  const anyOf = filters.any_of ?? [];
+  const draftOptions = useMemo(() => {
+    switch (draftField) {
+      case "yard_sign":
+        return opts.yard_signs;
+      case "donated":
+        return opts.donated;
+      case "alignment_label":
+        return opts.alignment_labels;
+      case "convos_candidate_support":
+        return opts.convos_candidate_support;
+      case "volunteer_interest":
+        return opts.volunteer_interests;
+      case "newsletter":
+        return opts.newsletters;
+      case "attended_event":
+        return opts.attended_events;
+      case "convos_poll_question":
+        return ["C) Not Sure", "A) Yes", "B) No"];
+      default:
+        return [];
+    }
+  }, [draftField, opts]);
+
+  // Must run after all hooks — early return when drawer is closed.
+  if (asDrawer && !open) return null;
 
   const setMulti = (key: keyof VoterFilters, value: string) => {
     const current = (filters[key] as string[] | undefined) ?? [];
@@ -464,30 +513,6 @@ export function VoterFiltersPanel({
     onChange({ ...filters, [key]: on ? true : null });
   };
 
-  const anyOf = filters.any_of ?? [];
-  const draftOptions = useMemo(() => {
-    switch (draftField) {
-      case "yard_sign":
-        return opts.yard_signs;
-      case "donated":
-        return opts.donated;
-      case "alignment_label":
-        return opts.alignment_labels;
-      case "convos_candidate_support":
-        return opts.convos_candidate_support;
-      case "volunteer_interest":
-        return opts.volunteer_interests;
-      case "newsletter":
-        return opts.newsletters;
-      case "attended_event":
-        return opts.attended_events;
-      case "convos_poll_question":
-        return ["C) Not Sure", "A) Yes", "B) No"];
-      default:
-        return [];
-    }
-  }, [draftField, opts]);
-
   const addDraftRule = () => {
     if (!draftField) return;
     let rule: FilterAnyOfRule | null = null;
@@ -504,8 +529,14 @@ export function VoterFiltersPanel({
     setDraftField("");
   };
 
-  return (
-    <div className="card flex max-h-[calc(100vh-8rem)] flex-col overflow-hidden p-0">
+  const panel = (
+    <div
+      className={`flex flex-col overflow-hidden bg-white ${
+        asDrawer
+          ? "h-full max-h-none rounded-none border-0 shadow-none"
+          : "card max-h-[calc(100vh-8rem)] p-0"
+      }`}
+    >
       <div className="shrink-0 space-y-3 border-b border-slate-100 px-4 pb-3 pt-4">
         <div className="flex items-start justify-between gap-2">
           <div>
@@ -514,15 +545,30 @@ export function VoterFiltersPanel({
               <p className="mt-0.5 text-xs font-medium text-brand-700">
                 {matchCount.toLocaleString()} matching
               </p>
+            ) : (
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                Narrow who appears in charts and lists.
+              </p>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="btn-ghost px-2 py-1 text-xs"
+              onClick={() => onChange(emptyFilters())}
+            >
+              Clear
+            </button>
+            {asDrawer && onClose ? (
+              <button
+                type="button"
+                className="btn-ghost px-2 py-1 text-xs"
+                onClick={onClose}
+              >
+                Done
+              </button>
             ) : null}
           </div>
-          <button
-            type="button"
-            className="btn-ghost px-2 py-1 text-xs"
-            onClick={() => onChange(emptyFilters())}
-          >
-            Clear
-          </button>
         </div>
 
         <input
@@ -534,7 +580,7 @@ export function VoterFiltersPanel({
         />
 
         {activeChips.length > 0 ? (
-          <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto">
+          <div className="flex max-h-20 flex-wrap gap-1.5 overflow-y-auto">
             {activeChips.map((chip) => (
               <span
                 key={chip}
@@ -595,7 +641,6 @@ export function VoterFiltersPanel({
           <FilterSection
             title="Nearby"
             hint="Distance range to FormHandler pins. Leave max blank for no upper limit."
-            defaultOpen
             forceOpen={Boolean(q)}
             badge={
               filters.nearby_yard_sign_min_miles != null ||
@@ -702,7 +747,7 @@ export function VoterFiltersPanel({
         ) ? (
           <FilterSection
             title="Geography & registration"
-            hint="State, county, party, city, ZIP, status, age."
+            hint="Idaho counties and cities, party, ZIP, status, age."
             forceOpen={Boolean(q)}
             badge={
               [
@@ -726,10 +771,13 @@ export function VoterFiltersPanel({
               valueLabels={STATE_VALUE_LABELS}
             />
             <MultiSelect
-              label="County"
+              label="County (Idaho)"
               values={opts.counties}
               selected={filters.county ?? []}
               onToggle={(v) => setMulti("county", v)}
+              searchable
+              searchPlaceholder="Search counties…"
+              maxHeight="max-h-40"
             />
             <MultiSelect
               label="Party"
@@ -738,10 +786,13 @@ export function VoterFiltersPanel({
               onToggle={(v) => setMulti("party", v)}
             />
             <MultiSelect
-              label="City"
+              label="City (Idaho)"
               values={opts.cities}
               selected={filters.city ?? []}
               onToggle={(v) => setMulti("city", v)}
+              searchable
+              searchPlaceholder="Search cities…"
+              maxHeight="max-h-40"
             />
             <MultiSelect
               label="Status"
@@ -1078,6 +1129,24 @@ export function VoterFiltersPanel({
       </div>
     </div>
   );
+
+  if (asDrawer) {
+    return (
+      <div className="fixed inset-0 z-40 flex justify-end">
+        <button
+          type="button"
+          className="absolute inset-0 bg-slate-900/30"
+          aria-label="Close filters"
+          onClick={() => onClose?.()}
+        />
+        <div className="relative z-10 flex h-full w-full max-w-sm flex-col border-l border-slate-200 bg-white shadow-xl">
+          {panel}
+        </div>
+      </div>
+    );
+  }
+
+  return panel;
 }
 
 
@@ -1088,6 +1157,8 @@ function MultiSelect({
   onToggle,
   maxHeight = "max-h-36",
   valueLabels,
+  searchable = false,
+  searchPlaceholder = "Search…",
 }: {
   label: string;
   values: string[];
@@ -1095,17 +1166,40 @@ function MultiSelect({
   onToggle: (v: string) => void;
   maxHeight?: string;
   valueLabels?: Record<string, string>;
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }) {
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return values;
+    return values.filter((v) => {
+      const label = (valueLabels?.[v] ?? v).toLowerCase();
+      return label.includes(needle) || v.toLowerCase().includes(needle);
+    });
+  }, [values, q, valueLabels]);
+
   return (
     <div>
       <p className="label">{label}</p>
+      {searchable && values.length > 8 ? (
+        <input
+          className="input mb-1.5 text-sm"
+          placeholder={searchPlaceholder}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          aria-label={`Search ${label}`}
+        />
+      ) : null}
       {values.length === 0 ? (
         <p className="text-xs text-slate-400">No values in import.</p>
+      ) : filtered.length === 0 ? (
+        <p className="text-xs text-slate-400">No matches.</p>
       ) : (
         <div
           className={`${maxHeight} space-y-1 overflow-y-auto rounded-md border border-slate-200 p-2`}
         >
-          {values.map((v) => (
+          {filtered.map((v) => (
             <label
               key={v}
               className="flex cursor-pointer items-center gap-2 text-sm"
@@ -1121,6 +1215,11 @@ function MultiSelect({
           ))}
         </div>
       )}
+      {selected.length > 0 ? (
+        <p className="mt-1 text-[11px] text-slate-500">
+          {selected.length} selected
+        </p>
+      ) : null}
     </div>
   );
 }

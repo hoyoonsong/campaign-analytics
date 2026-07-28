@@ -1,60 +1,76 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Alert, EmptyState, PageHeader, Spinner } from '../components/ui';
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Alert, EmptyState, PageHeader, Spinner } from "../components/ui";
+import { PetitionExportModal } from "../components/PetitionExportModal";
 import {
   EMPTY_FILTER_OPTIONS,
   mergeOptions,
   VoterFiltersPanel,
   type FilterOptions,
-} from '../components/VoterFiltersPanel';
-import { NearbyPinModal } from '../components/NearbyPinModal';
-import { VoterProfileModal } from '../components/VoterProfileModal';
+} from "../components/VoterFiltersPanel";
+import { NearbyPinModal } from "../components/NearbyPinModal";
+import { VoterProfileModal } from "../components/VoterProfileModal";
 import {
   deleteVoters,
-  exportPage,
+  fetchAnalytics,
   fetchFilterOptions,
   fetchSearch,
   type NearbyKind,
-} from '../lib/api';
-import { logActivity } from '../lib/activityLog';
-import { votersToCsv } from '../lib/csv';
-import { emptyFilters } from '../lib/filters';
-import type { VoterFilters, VoterRow } from '../lib/types';
+} from "../lib/api";
+import { logActivity } from "../lib/activityLog";
+import {
+  downloadVotersCsv,
+  sleep,
+  VOTER_EXPORT_COLS,
+} from "../lib/exportVotersCsv";
+import { emptyFilters, summarizeFilters } from "../lib/filters";
+import {
+  SEARCH_FILTERS_HANDOFF_KEY,
+  clearPersistedSearchFilters,
+  loadPersistedSearchFilters,
+  persistSearchFilters,
+} from "../lib/navigateToSearch";
+import {
+  PETITION_COMBOS,
+  comboExportFilename,
+  mergeFiltersWithSegment,
+  type PetitionVennCounts,
+  type PetitionVennKey,
+} from "../lib/petitionCombos";
+import type { VoterFilters, VoterRow } from "../lib/types";
 
 const PAGE_SIZE = 50;
-const EXPORT_COLS = [
-  'murmuration_id',
-  'voter_id',
-  'first_name',
-  'last_name',
-  'email',
-  'phone',
-  'age',
-  'address_line_1',
-  'city',
-  'zip',
-  'state',
-  'lat',
-  'lng',
-  'party',
-  'support_score',
-  'volunteer_interest',
-  'yard_sign',
-  'donated',
-  'attended_event',
-  'supporter_tag',
-  'nearby_yard_sign_miles',
-  'nearby_volunteer_miles',
-];
+
+function initialSearchFilters(): VoterFilters {
+  try {
+    const handoff = sessionStorage.getItem(SEARCH_FILTERS_HANDOFF_KEY);
+    if (handoff) {
+      sessionStorage.removeItem(SEARCH_FILTERS_HANDOFF_KEY);
+      return { ...emptyFilters(), ...JSON.parse(handoff) };
+    }
+  } catch {
+    /* ignore */
+  }
+  return loadPersistedSearchFilters() ?? emptyFilters();
+}
 
 export default function Search() {
-  const [filters, setFilters] = useState<VoterFilters>(emptyFilters());
-  const [q, setQ] = useState('');
+  const [filters, setFilters] = useState<VoterFilters>(initialSearchFilters);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [rows, setRows] = useState<VoterRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportingKey, setExportingKey] = useState<PetitionVennKey | null>(
+    null,
+  );
+  const [exportingAll, setExportingAll] = useState(false);
+  const [petitionVenn, setPetitionVenn] = useState<PetitionVennCounts | null>(
+    null,
+  );
   const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [profileId, setProfileId] = useState<number | null>(null);
@@ -64,20 +80,18 @@ export default function Search() {
   } | null>(null);
   const [options, setOptions] = useState<FilterOptions>(EMPTY_FILTER_OPTIONS);
 
+  const activeFilterChips = useMemo(() => summarizeFilters(filters), [filters]);
+
   useEffect(() => {
     void fetchFilterOptions()
       .then((o) => setOptions(mergeOptions(o)))
       .catch(() => setOptions(EMPTY_FILTER_OPTIONS));
-    const raw = sessionStorage.getItem('voter_universe_filters');
-    if (raw) {
-      try {
-        setFilters({ ...emptyFilters(), ...JSON.parse(raw) });
-      } catch {
-        /* ignore */
-      }
-      sessionStorage.removeItem('voter_universe_filters');
-    }
   }, []);
+
+  // Keep Search filters across navigations / reloads.
+  useEffect(() => {
+    persistSearchFilters(filters);
+  }, [filters]);
 
   useEffect(() => {
     let active = true;
@@ -106,6 +120,24 @@ export default function Search() {
       clearTimeout(t);
     };
   }, [filters, q, page]);
+
+  // Petition Venn counts for the current filter universe (sidebar filters).
+  useEffect(() => {
+    let active = true;
+    const t = setTimeout(() => {
+      void fetchAnalytics(filters)
+        .then((data) => {
+          if (active) setPetitionVenn(data.petition_venn ?? null);
+        })
+        .catch(() => {
+          if (active) setPetitionVenn(null);
+        });
+    }, 300);
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
+  }, [filters]);
 
   // Drop selection when the result universe changes (not on pagination).
   useEffect(() => {
@@ -143,42 +175,72 @@ export default function Search() {
     setExporting(true);
     setError(null);
     try {
-      const chunks: string[] = [];
-      let afterId: number | null = null;
-      let first = true;
-      for (;;) {
-        const { rows: batch, next_cursor } = await exportPage({
-          filters,
-          afterId,
-          limit: 1000,
-        });
-        if (batch.length === 0) break;
-        const csv = votersToCsv(batch as unknown as Record<string, unknown>[], EXPORT_COLS);
-        if (first) {
-          chunks.push(csv);
-          first = false;
-        } else {
-          chunks.push(csv.split('\n').slice(1).join('\n'));
-        }
-        if (next_cursor == null) break;
-        afterId = next_cursor;
-      }
-      const blob = new Blob([chunks.join('\n')], { type: 'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `voters-export-${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const count = await downloadVotersCsv({
+        filters,
+        filename: `voters-export-${new Date().toISOString().slice(0, 10)}.csv`,
+        columns: VOTER_EXPORT_COLS,
+      });
       void logActivity({
-        action: 'export',
-        entityType: 'voter',
-        metadata: { label: 'CSV export', count: total },
+        action: "export",
+        entityType: "voter",
+        metadata: { label: "CSV export", count },
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Export failed');
+      setError(err instanceof Error ? err.message : "Export failed");
     } finally {
       setExporting(false);
+    }
+  };
+
+  const exportSegment = async (key: PetitionVennKey) => {
+    setExportingKey(key);
+    setError(null);
+    try {
+      const merged = mergeFiltersWithSegment(filters, key);
+      const count = await downloadVotersCsv({
+        filters: merged,
+        filename: comboExportFilename(key),
+      });
+      void logActivity({
+        action: "export",
+        entityType: "voter",
+        metadata: { label: `Petition combo CSV (${key})`, count },
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExportingKey(null);
+    }
+  };
+
+  const exportAllCombos = async () => {
+    setExportingAll(true);
+    setError(null);
+    try {
+      let totalExported = 0;
+      for (const combo of PETITION_COMBOS) {
+        setExportingKey(combo.key);
+        const merged = mergeFiltersWithSegment(filters, combo.key);
+        const count = await downloadVotersCsv({
+          filters: merged,
+          filename: comboExportFilename(combo.key),
+        });
+        totalExported += count;
+        await sleep(400);
+      }
+      void logActivity({
+        action: "export",
+        entityType: "voter",
+        metadata: {
+          label: "Petition combo CSV (all 7)",
+          count: totalExported,
+        },
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExportingKey(null);
+      setExportingAll(false);
     }
   };
 
@@ -186,7 +248,7 @@ export default function Search() {
     const ids = [...selected];
     if (!ids.length) return;
     const ok = window.confirm(
-      `Permanently delete ${ids.length.toLocaleString()} selected voter${ids.length === 1 ? '' : 's'} from analytics?\n\nThis cannot be undone (re-import to restore).`,
+      `Permanently delete ${ids.length.toLocaleString()} selected voter${ids.length === 1 ? "" : "s"} from analytics?\n\nThis cannot be undone (re-import to restore).`,
     );
     if (!ok) return;
 
@@ -195,9 +257,9 @@ export default function Search() {
     try {
       const res = await deleteVoters(ids);
       void logActivity({
-        action: 'delete',
-        entityType: 'voter',
-        metadata: { label: 'Delete selected voters', count: res.deleted },
+        action: "delete",
+        entityType: "voter",
+        metadata: { label: "Delete selected voters", count: res.deleted },
       });
       setSelected(new Set());
       setRows((prev) => prev.filter((r) => !ids.includes(r.id)));
@@ -207,7 +269,7 @@ export default function Search() {
       setRows(data.rows);
       setTotal(data.total);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Delete failed');
+      setError(err instanceof Error ? err.message : "Delete failed");
     } finally {
       setDeleting(false);
     }
@@ -217,9 +279,19 @@ export default function Search() {
     <div>
       <PageHeader
         title="Voter Search"
-        description="Filter by tags and distance, select people, export — or delete contacts you don’t need to target."
+        description="Filtered list of people. Open Filters to refine, or Export for CSVs."
         actions={
           <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setFiltersOpen(true)}
+            >
+              Filters
+              {activeFilterChips.length > 0
+                ? ` (${activeFilterChips.length})`
+                : ""}
+            </button>
             {someSelected ? (
               <button
                 type="button"
@@ -227,9 +299,7 @@ export default function Search() {
                 disabled={deleting}
                 onClick={() => void handleDeleteSelected()}
               >
-                {deleting
-                  ? 'Deleting…'
-                  : `Delete selected (${selected.size})`}
+                {deleting ? "Deleting…" : `Delete selected (${selected.size})`}
               </button>
             ) : null}
             <button
@@ -238,178 +308,213 @@ export default function Search() {
               disabled={exporting || total === 0}
               onClick={() => void handleExport()}
             >
-              {exporting ? 'Exporting…' : 'Export CSV'}
+              {exporting ? "Exporting…" : "Export CSV"}
             </button>
           </div>
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
-        <VoterFiltersPanel
-          filters={filters}
-          onChange={(f) => {
-            setPage(1);
-            setFilters(f);
-          }}
-          options={options}
-          matchCount={total}
-        />
+      {activeFilterChips.length > 0 ? (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          {activeFilterChips.slice(0, 10).map((chip) => (
+            <span
+              key={chip}
+              className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700"
+            >
+              {chip}
+            </span>
+          ))}
+          <button
+            type="button"
+            className="text-[11px] font-medium text-brand-700 hover:underline"
+            onClick={() => {
+              setPage(1);
+              clearPersistedSearchFilters();
+              setFilters(emptyFilters());
+            }}
+          >
+            Clear
+          </button>
+        </div>
+      ) : null}
 
-        <div className="space-y-4">
-          <div className="card p-4">
-            <label className="label" htmlFor="q">
-              Search
-            </label>
-            <input
-              id="q"
-              className="input"
-              placeholder="Name, voter ID, address, city, ZIP, email, phone…"
-              value={q}
-              onChange={(e) => {
-                setPage(1);
-                setQ(e.target.value);
-              }}
-            />
-          </div>
+      <VoterFiltersPanel
+        asDrawer
+        open={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        filters={filters}
+        onChange={(f) => {
+          setPage(1);
+          setFilters(f);
+        }}
+        options={options}
+        matchCount={total}
+      />
 
-          {error && <Alert variant="error">{error}</Alert>}
+      <PetitionExportModal
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        counts={petitionVenn}
+        exportingKey={exportingKey}
+        exportingAll={exportingAll}
+        onExportSegment={(key) => void exportSegment(key)}
+        onExportAll={() => void exportAllCombos()}
+      />
 
-          {loading && rows.length === 0 ? (
-            <Spinner label="Searching…" />
-          ) : rows.length === 0 ? (
-            <EmptyState
-              title="No matching voters"
-              description="Adjust filters or search terms, or import a voter file."
-            />
-          ) : (
-            <div className="card overflow-x-auto">
-              {someSelected ? (
-                <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                  <span>
-                    <span className="font-semibold text-slate-800">
-                      {selected.size}
-                    </span>{' '}
-                    selected
-                  </span>
-                  <button
-                    type="button"
-                    className="btn-ghost px-2 py-1 text-xs"
-                    onClick={() => setSelected(new Set())}
-                  >
-                    Clear selection
-                  </button>
-                </div>
-              ) : null}
-              <table className="min-w-full text-left text-sm">
-                <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500">
-                  <tr>
-                    <th className="w-10 px-3 py-2">
-                      <input
-                        type="checkbox"
-                        checked={allPageSelected}
-                        onChange={togglePage}
-                        aria-label="Select all on page"
-                        className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-                      />
-                    </th>
-                    <th className="px-3 py-2 font-medium">Name</th>
-                    <th className="px-3 py-2 font-medium">Supporter</th>
-                    <th className="px-3 py-2 font-medium">Nearby</th>
-                    <th className="px-3 py-2 font-medium">Address</th>
-                    <th className="px-3 py-2 font-medium">Party</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => {
-                    const tag = r.supporter_tag?.trim();
-                    const checked = selected.has(r.id);
-                    return (
-                      <tr
-                        key={r.id}
-                        className={`border-b border-slate-100 last:border-0 ${
-                          checked ? 'bg-brand-50/40' : ''
-                        }`}
-                      >
-                        <td className="px-3 py-2">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleOne(r.id)}
-                            aria-label={`Select ${[r.first_name, r.last_name].filter(Boolean).join(' ') || r.id}`}
-                            className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-                          />
-                        </td>
-                        <td className="px-3 py-2 font-medium text-slate-800">
-                          <button
-                            type="button"
-                            className="text-left font-medium text-brand-700 hover:underline"
-                            onClick={() => setProfileId(r.id)}
-                          >
-                            {[r.first_name, r.last_name].filter(Boolean).join(' ') ||
-                              'Unnamed'}
-                          </button>
-                        </td>
-                        <td className="px-3 py-2">
-                          <span
-                            className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium capitalize ${
-                              tag === 'supporter'
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : tag === 'opposed'
-                                  ? 'bg-rose-100 text-rose-800'
-                                  : tag === 'maybe'
-                                    ? 'bg-amber-100 text-amber-900'
-                                    : 'bg-slate-100 text-slate-700'
-                            }`}
-                          >
-                            {tag ||
-                              (r.is_campaign_volunteer ? 'volunteer' : '—')}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-xs text-slate-600">
-                          <NearbyCell
-                            row={r}
-                            onOpen={(kind) =>
-                              setNearbyModal({ voterId: r.id, kind })
-                            }
-                          />
-                        </td>
-                        <td className="px-3 py-2 text-slate-600">
-                          {[r.address_line_1, r.city, r.zip]
+      <div className="space-y-4">
+        <div className="card p-4">
+          <label className="label" htmlFor="q">
+            Search
+          </label>
+          <input
+            id="q"
+            className="input"
+            placeholder="Name, voter ID, address, city, ZIP, email, phone…"
+            value={q}
+            onChange={(e) => {
+              setPage(1);
+              setQ(e.target.value);
+            }}
+          />
+        </div>
+
+        {error && <Alert variant="error">{error}</Alert>}
+
+        {loading && rows.length === 0 ? (
+          <Spinner label="Searching…" />
+        ) : rows.length === 0 ? (
+          <EmptyState
+            title="No matching voters"
+            description="Adjust filters or search terms, or import a voter file."
+          />
+        ) : (
+          <div className="card overflow-x-auto">
+            {someSelected ? (
+              <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                <span>
+                  <span className="font-semibold text-slate-800">
+                    {selected.size}
+                  </span>{" "}
+                  selected
+                </span>
+                <button
+                  type="button"
+                  className="btn-ghost px-2 py-1 text-xs"
+                  onClick={() => setSelected(new Set())}
+                >
+                  Clear selection
+                </button>
+              </div>
+            ) : null}
+            <table className="min-w-full text-left text-sm">
+              <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="w-10 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={allPageSelected}
+                      onChange={togglePage}
+                      aria-label="Select all on page"
+                      className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                    />
+                  </th>
+                  <th className="px-3 py-2 font-medium">Name</th>
+                  <th className="px-3 py-2 font-medium">Supporter</th>
+                  <th className="px-3 py-2 font-medium">Nearby</th>
+                  <th className="px-3 py-2 font-medium">Address</th>
+                  <th className="px-3 py-2 font-medium">Party</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const tag = r.supporter_tag?.trim();
+                  const checked = selected.has(r.id);
+                  return (
+                    <tr
+                      key={r.id}
+                      className={`border-b border-slate-100 last:border-0 ${
+                        checked ? "bg-brand-50/40" : ""
+                      }`}
+                    >
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleOne(r.id)}
+                          aria-label={`Select ${[r.first_name, r.last_name].filter(Boolean).join(" ") || r.id}`}
+                          className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                        />
+                      </td>
+                      <td className="px-3 py-2 font-medium text-slate-800">
+                        <button
+                          type="button"
+                          className="text-left font-medium text-brand-700 hover:underline"
+                          onClick={() => setProfileId(r.id)}
+                        >
+                          {[r.first_name, r.last_name]
                             .filter(Boolean)
-                            .join(', ')}
-                        </td>
-                        <td className="px-3 py-2 text-slate-600">{r.party}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
-                <p className="text-xs text-slate-500">
-                  Page {page} of {totalPages} · {total.toLocaleString()} results
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className="btn-secondary px-3 py-1.5 text-xs"
-                    disabled={page <= 1}
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  >
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-secondary px-3 py-1.5 text-xs"
-                    disabled={page >= totalPages}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    Next
-                  </button>
-                </div>
+                            .join(" ") || "Unnamed"}
+                        </button>
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium capitalize ${
+                            tag === "supporter"
+                              ? "bg-emerald-100 text-emerald-800"
+                              : tag === "opposed"
+                                ? "bg-rose-100 text-rose-800"
+                                : tag === "maybe"
+                                  ? "bg-amber-100 text-amber-900"
+                                  : "bg-slate-100 text-slate-700"
+                          }`}
+                        >
+                          {tag || (r.is_campaign_volunteer ? "volunteer" : "—")}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-slate-600">
+                        <NearbyCell
+                          row={r}
+                          onOpen={(kind) =>
+                            setNearbyModal({ voterId: r.id, kind })
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-slate-600">
+                        {[r.address_line_1, r.city, r.zip]
+                          .filter(Boolean)
+                          .join(", ")}
+                      </td>
+                      <td className="px-3 py-2 text-slate-600">{r.party}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
+              <p className="text-xs text-slate-500">
+                Page {page} of {totalPages} · {total.toLocaleString()} results
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="btn-secondary px-3 py-1.5 text-xs"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary px-3 py-1.5 text-xs"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </button>
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {profileId != null && (
@@ -456,7 +561,7 @@ function NearbyCell({
         className="font-medium text-amber-700 underline decoration-amber-300 underline-offset-2 hover:text-amber-900"
         onClick={(e) => {
           e.stopPropagation();
-          onOpen('yard_sign');
+          onOpen("yard_sign");
         }}
       >
         Yard {Number(yard).toFixed(1)} mi
@@ -467,7 +572,7 @@ function NearbyCell({
     if (parts.length) {
       parts.push(
         <span key="sep" className="text-slate-400">
-          {' · '}
+          {" · "}
         </span>,
       );
     }
@@ -478,7 +583,7 @@ function NearbyCell({
         className="font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:text-sky-900"
         onClick={(e) => {
           e.stopPropagation();
-          onOpen('volunteer');
+          onOpen("volunteer");
         }}
       >
         Vol {Number(vol).toFixed(1)} mi
@@ -487,7 +592,11 @@ function NearbyCell({
   }
 
   if (parts.length) {
-    return <span className="inline-flex flex-wrap items-center gap-0.5">{parts}</span>;
+    return (
+      <span className="inline-flex flex-wrap items-center gap-0.5">
+        {parts}
+      </span>
+    );
   }
 
   if (hasAddress && !hasCoords) {
@@ -498,7 +607,7 @@ function NearbyCell({
         title="No lat/lng on file — click to geocode address and find nearest pin"
         onClick={(e) => {
           e.stopPropagation();
-          onOpen('yard_sign');
+          onOpen("yard_sign");
         }}
       >
         Locate…

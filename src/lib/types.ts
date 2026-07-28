@@ -216,6 +216,18 @@ export interface SignatureStats {
   signed_any: number;
 }
 
+/** Exclusive OP × RF × MMJ Venn segment (Achilles ignored). */
+export type PetitionVennKey =
+  | 'op_only'
+  | 'rf_only'
+  | 'mmj_only'
+  | 'op_rf'
+  | 'op_mmj'
+  | 'rf_mmj'
+  | 'all_three';
+
+export type PetitionVennCounts = Record<PetitionVennKey, number>;
+
 export interface AnalyticsSummary {
   total: number;
   with_coords: number;
@@ -232,6 +244,8 @@ export interface AnalyticsSummary {
   signatures?: SignatureStats;
   by_signature?: CountBucket[];
   by_petition_count?: CountBucket[];
+  /** Exclusive 3-set Venn (Open Primaries × Reproductive Freedom × Medical Marijuana). */
+  petition_venn?: PetitionVennCounts;
   /** Mean miles to nearest FormHandler yard sign (sample of matching voters with coords). */
   avg_nearby_yard_sign_miles?: number | null;
   /** Mean miles to nearest FormHandler volunteer pin. */

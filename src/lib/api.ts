@@ -54,10 +54,13 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export async function fetchAnalytics(filters: VoterFilters) {
   const payload = toFilterPayload(filters);
   const empty = Object.keys(payload).length === 0;
-  const cacheKey = 'analytics_summary_empty_v1';
+  const cacheKey = 'analytics_summary_empty_v3';
 
   if (empty && typeof sessionStorage !== 'undefined') {
     try {
+      // Drop older client caches that predate petition_venn.
+      sessionStorage.removeItem('analytics_summary_empty_v1');
+      sessionStorage.removeItem('analytics_summary_empty_v2');
       const raw = sessionStorage.getItem(cacheKey);
       if (raw) {
         const parsed = JSON.parse(raw) as {
@@ -65,7 +68,12 @@ export async function fetchAnalytics(filters: VoterFilters) {
           data: AnalyticsSummary;
         };
         // 10 minutes — server cache is source of truth; this just skips a round trip.
-        if (Date.now() - parsed.at < 10 * 60 * 1000 && parsed.data) {
+        // Require petition_venn so a pre-migration snapshot can't stick around as all zeros.
+        if (
+          Date.now() - parsed.at < 10 * 60 * 1000 &&
+          parsed.data?.petition_venn &&
+          typeof parsed.data.petition_venn.op_only === 'number'
+        ) {
           return parsed.data;
         }
       }
@@ -352,6 +360,8 @@ export function clearClientDataCaches() {
   if (typeof sessionStorage === 'undefined') return;
   try {
     sessionStorage.removeItem('analytics_summary_empty_v1');
+    sessionStorage.removeItem('analytics_summary_empty_v2');
+    sessionStorage.removeItem('analytics_summary_empty_v3');
     sessionStorage.removeItem('voter_filter_options_v1');
   } catch {
     /* ignore */

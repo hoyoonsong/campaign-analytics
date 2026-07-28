@@ -50,13 +50,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return json(res, 500, { error: cacheErr.message });
     }
     const cached = cache?.analytics_summary_cache;
-    if (cached && typeof cached === 'object') {
+    const cachedObj =
+      cached && typeof cached === 'object'
+        ? (cached as Record<string, unknown>)
+        : null;
+    const hasVenn =
+      cachedObj?.petition_venn != null &&
+      typeof cachedObj.petition_venn === 'object';
+    if (cachedObj && hasVenn) {
       return json(
         res,
         200,
         mergePresence(
           {
-            ...(cached as Record<string, unknown>),
+            ...cachedObj,
             analytics_from_cache: true,
             analytics_summary_cached_at: cache?.analytics_summary_cached_at ?? null,
           },
@@ -64,7 +71,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ),
       );
     }
-    // Cache miss — compute once and store.
+    // Cache miss or pre-petition_venn snapshot — compute once and store.
     const { data, error } = await ctx.voter.rpc('voter_analytics_summary', {
       filters: {},
     });

@@ -16,6 +16,7 @@ import {
 } from '../lib/api';
 import { logActivity } from '../lib/activityLog';
 import { emptyFilters, summarizeFilters } from '../lib/filters';
+import { persistSearchFilters } from '../lib/navigateToSearch';
 import {
   SUPPORTER_TAG_PRESETS,
   type SupporterTagPreset,
@@ -84,7 +85,9 @@ export default function Universes() {
   };
 
   const apply = (u: SavedUniverse) => {
-    sessionStorage.setItem('voter_universe_filters', JSON.stringify(u.filters));
+    const next = { ...emptyFilters(), ...u.filters };
+    sessionStorage.setItem('voter_universe_filters', JSON.stringify(next));
+    persistSearchFilters(next);
     navigate('/search');
   };
 
