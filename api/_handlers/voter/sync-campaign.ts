@@ -40,11 +40,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     if (syncErr) {
+      // Lean sync can fail under pg_safeupdate (unqualified UPDATE). Still refresh
+      // map pins with contact fields so Analytics popups stay populated.
+      const { data: geoOnly, error: geoErr } = await ctx.voter.rpc(
+        'replace_campaign_geo',
+        { p_geo: payload.geo },
+      );
       await ctx.voter
         .from('campaign_sync_state')
-        .update({ last_error: syncErr.message, updated_at: new Date().toISOString() })
+        .update({
+          last_error: syncErr.message,
+          volunteer_count: payload.volunteer_count,
+          yard_sign_count: payload.yard_sign_count,
+          geo_point_count:
+            typeof (geoOnly as { geo_count?: number } | null)?.geo_count === 'number'
+              ? (geoOnly as { geo_count: number }).geo_count
+              : payload.geo.length,
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', 1);
-      return json(res, 500, { error: syncErr.message });
+      return json(res, 500, {
+        error: syncErr.message,
+        geo: geoErr ? { error: geoErr.message } : geoOnly,
+      });
     }
 
     let tagsResult: unknown = null;

@@ -67,7 +67,16 @@ export default function Analytics() {
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [points, setPoints] = useState<MapPoint[]>([]);
   const [campaignGeo, setCampaignGeo] = useState<
-    Array<{ kind: 'volunteer' | 'yard_sign'; lat: number; lng: number }>
+    Array<{
+      kind: 'volunteer' | 'yard_sign';
+      lat: number;
+      lng: number;
+      source_id?: string;
+      name?: string | null;
+      email?: string | null;
+      phone?: string | null;
+      address?: string | null;
+    }>
   >([]);
   const [truncated, setTruncated] = useState(false);
   const [options, setOptions] = useState(EMPTY_FILTER_OPTIONS);
