@@ -1,5 +1,5 @@
 /**
- * Apply campaign migrations (0015–0018) to the voter Supabase project.
+ * Apply campaign migrations (0015–0038) to the voter Supabase project.
  *
  * Usage:
  *   SUPABASE_DB_PASSWORD='your-db-password' node scripts/apply-campaign-features.mjs
@@ -54,6 +54,8 @@ const files = [
   'supabase/migrations/0034_petition_venn.sql',
   'supabase/migrations/0035_filter_options_idaho_cities.sql',
   'supabase/migrations/0036_fix_lean_sync_safeupdate.sql',
+  'supabase/migrations/0037_fix_export_timeout.sql',
+  'supabase/migrations/0038_map_geo_sample.sql',
 ];
 
 const sql = files
@@ -68,10 +70,10 @@ const client = new pg.Client({
 });
 
 await client.connect();
-console.log('Connected. Applying 0015–0036…');
+console.log('Connected. Applying 0015–0038…');
 try {
   await client.query(sql);
-  console.log('OK — campaign features through 0036 applied.');
+  console.log('OK — campaign features through 0038 applied.');
 } catch (err) {
   console.error('FAILED:', err.message);
   process.exitCode = 1;

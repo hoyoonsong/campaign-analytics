@@ -11,18 +11,14 @@ import L from 'leaflet';
 import type { GeoJsonObject, Feature, FeatureCollection } from 'geojson';
 import 'leaflet/dist/leaflet.css';
 import { COUNTY_CENTROIDS, IDAHO_COUNTIES } from '../lib/idahoCounties';
+import {
+  collapsePresencePins,
+  type PresencePin,
+  type RawPresencePin,
+} from '../lib/presencePins';
 import type { MapPoint } from '../lib/types';
 
-export type CampaignMapPin = {
-  kind: 'volunteer' | 'yard_sign';
-  lat: number;
-  lng: number;
-  source_id?: string;
-  name?: string | null;
-  email?: string | null;
-  phone?: string | null;
-  address?: string | null;
-};
+export type CampaignMapPin = RawPresencePin;
 
 const IDAHO_BOUNDS = L.latLngBounds(
   [41.9, -117.3],
@@ -52,6 +48,27 @@ const volIcon = L.divIcon({
   iconAnchor: [11, 11],
   popupAnchor: [0, -12],
 });
+
+/** Volunteer + yard sign — one pin so roles never stack. */
+const bothIcon = L.divIcon({
+  className: '',
+  html: `<span style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#0d9488 50%,#d97706 50%);border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.45);font-size:8px;font-weight:800;color:#fff;line-height:1;letter-spacing:-0.02em">V+YS</span>`,
+  iconSize: [26, 26],
+  iconAnchor: [13, 13],
+  popupAnchor: [0, -14],
+});
+
+function presenceIcon(kind: PresencePin['kind']) {
+  if (kind === 'both') return bothIcon;
+  if (kind === 'yard_sign') return yardIcon;
+  return volIcon;
+}
+
+function presenceLabel(kind: PresencePin['kind']) {
+  if (kind === 'both') return 'Volunteer + Yard sign';
+  if (kind === 'yard_sign') return 'Yard sign';
+  return 'Volunteer';
+}
 
 function countyFill(count: number): string {
   if (count <= 0) return '#f1f5f9';
@@ -129,14 +146,14 @@ export function VoterMap({
     return campaignGeo.filter((g) => inBounds(g.lat, g.lng, focusBounds));
   }, [campaignGeo, focusBounds, focusCounty]);
 
-  const yardPins = useMemo(
-    () => localGeo.filter((g) => g.kind === 'yard_sign'),
+  /** One pin per person — both / YS / V. Multiple YS addresses collapse to one. */
+  const presencePins = useMemo(
+    () => collapsePresencePins(localGeo),
     [localGeo],
   );
-  const volPins = useMemo(
-    () => localGeo.filter((g) => g.kind === 'volunteer'),
-    [localGeo],
-  );
+  const yardOnlyCount = presencePins.filter((p) => p.kind === 'yard_sign').length;
+  const volOnlyCount = presencePins.filter((p) => p.kind === 'volunteer').length;
+  const bothCount = presencePins.filter((p) => p.kind === 'both').length;
 
   return (
     <div className="card overflow-hidden">
@@ -146,10 +163,11 @@ export function VoterMap({
           <p className="text-xs text-slate-500">
             {focusCounty
               ? `${focusCounty} County · ${localPoints.length.toLocaleString()} voter pins` +
-                (yardPins.length || volPins.length
-                  ? ` · ${yardPins.length} yard signs · ${volPins.length} volunteers`
+                (presencePins.length
+                  ? ` · ${yardOnlyCount} yard signs · ${volOnlyCount} volunteers` +
+                    (bothCount ? ` · ${bothCount} both` : '')
                   : '') +
-                (truncated ? ' (pin set capped)' : '')
+                (truncated ? ' (spread sample — not every voter)' : '')
               : `${countiesWithVoters} of 44 counties with voters` +
                 (totalVoters
                   ? ` · ${totalVoters.toLocaleString()} matching`
@@ -182,7 +200,9 @@ export function VoterMap({
             focusCounty={focusCounty}
             countyBounds={focusBounds}
             points={localPoints.map((p) => [p.lat, p.lng] as [number, number])}
-            presence={localGeo.map((g) => [g.lat, g.lng] as [number, number])}
+            presence={presencePins.map(
+              (g) => [g.lat, g.lng] as [number, number],
+            )}
           />
 
           <CountyChoropleth
@@ -224,31 +244,16 @@ export function VoterMap({
               </Marker>
             ))}
 
-          {/* Presence on top so they stay visible in the clutter */}
           {focusCounty &&
-            yardPins.map((g, i) => (
+            presencePins.map((g, i) => (
               <Marker
-                key={`y-${g.source_id ?? i}-${g.lat}-${g.lng}`}
+                key={`p-${g.kind}-${g.source_id ?? i}-${g.lat}-${g.lng}`}
                 position={[g.lat, g.lng]}
-                icon={yardIcon}
-                zIndexOffset={800}
+                icon={presenceIcon(g.kind)}
+                zIndexOffset={g.kind === 'both' ? 950 : 850}
               >
                 <Popup>
-                  <PresencePopup kind="Yard sign" pin={g} />
-                </Popup>
-              </Marker>
-            ))}
-
-          {focusCounty &&
-            volPins.map((g, i) => (
-              <Marker
-                key={`vol-${g.source_id ?? i}-${g.lat}-${g.lng}`}
-                position={[g.lat, g.lng]}
-                icon={volIcon}
-                zIndexOffset={900}
-              >
-                <Popup>
-                  <PresencePopup kind="Volunteer" pin={g} />
+                  <PresencePopup pin={g} />
                 </Popup>
               </Marker>
             ))}
@@ -276,6 +281,17 @@ export function VoterMap({
               </span>
               Volunteers
             </span>
+            <span className="flex items-center gap-1.5">
+              <span
+                className="inline-flex h-4 w-5 items-center justify-center rounded-sm text-[8px] font-bold text-white"
+                style={{
+                  background: 'linear-gradient(135deg,#0d9488 50%,#d97706 50%)',
+                }}
+              >
+                V+YS
+              </span>
+              Both
+            </span>
           </>
         )}
       </div>
@@ -283,22 +299,21 @@ export function VoterMap({
   );
 }
 
-function PresencePopup({
-  kind,
-  pin,
-}: {
-  kind: string;
-  pin: CampaignMapPin;
-}) {
+function PresencePopup({ pin }: { pin: PresencePin }) {
+  const ysNote =
+    pin.yard_sign_count && pin.yard_sign_count > 1
+      ? `${pin.yard_sign_count} yard signs on file (showing one pin)`
+      : null;
   return (
     <div className="min-w-[180px] space-y-1 text-sm">
       <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-        {kind}
+        {presenceLabel(pin.kind)}
       </p>
       <p className="font-semibold text-slate-900">
         {pin.name?.trim() || 'Name not on file'}
       </p>
       {pin.address ? <p className="text-slate-600">{pin.address}</p> : null}
+      {ysNote ? <p className="text-xs text-slate-500">{ysNote}</p> : null}
       {pin.phone ? (
         <p className="text-slate-600">
           <a className="text-brand-700 hover:underline" href={`tel:${pin.phone}`}>

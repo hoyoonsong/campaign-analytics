@@ -131,8 +131,60 @@ export function escapeCsvCell(value: unknown): string {
   return s;
 }
 
+/** Columns Excel likes to mangle into scientific notation / numbers. */
+const EXCEL_TEXT_COLS = new Set([
+  'murmuration_id',
+  'voter_id',
+  'phone',
+  'zip',
+]);
+
+/** US phone as (XXX) XXX-XXXX so Excel won't treat it as a number. */
+export function formatPhoneForExport(value: unknown): string {
+  if (value == null || value === '') return '';
+  const raw = String(value).trim();
+  const digits = raw.replace(/\D/g, '');
+  const ten =
+    digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+  if (ten.length === 10) {
+    return `(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}`;
+  }
+  return raw;
+}
+
+/**
+ * Excel text formula — keeps long IDs / zips as text instead of scientific
+ * notation (same idea as FormHandler phone formatting with punctuation).
+ */
+function excelTextFormula(value: string): string {
+  return `="${value.replace(/"/g, '""')}"`;
+}
+
+function looksNumericId(s: string): boolean {
+  // Pure digits, or ZIP+4, long enough that Excel may switch to scientific.
+  return /^\d{5,}(-\d{4})?$/.test(s);
+}
+
+/** Format one export cell for a known column name. */
+export function formatExportCell(column: string, value: unknown): string {
+  if (value == null || value === '') return '';
+
+  if (column === 'phone') {
+    return escapeCsvCell(formatPhoneForExport(value));
+  }
+
+  const s = String(value);
+  if (EXCEL_TEXT_COLS.has(column) && looksNumericId(s.trim())) {
+    return excelTextFormula(s.trim());
+  }
+
+  return escapeCsvCell(value);
+}
+
 export function votersToCsv(rows: Record<string, unknown>[], columns: string[]): string {
   const header = columns.map(escapeCsvCell).join(',');
-  const lines = rows.map((r) => columns.map((c) => escapeCsvCell(r[c])).join(','));
+  const lines = rows.map((r) =>
+    columns.map((c) => formatExportCell(c, r[c])).join(','),
+  );
   return [header, ...lines].join('\n');
 }

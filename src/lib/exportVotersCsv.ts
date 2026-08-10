@@ -36,8 +36,14 @@ function downloadBlob(blob: Blob, filename: string) {
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  a.rel = 'noopener';
+  // Detached anchors are ignored in Firefox/Safari; keep it in the DOM briefly.
+  a.style.display = 'none';
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  // Revoking immediately can cancel the download in some browsers.
+  window.setTimeout(() => URL.revokeObjectURL(url), 2_000);
 }
 
 /** Paginate export RPC and download a single CSV. */
@@ -59,7 +65,7 @@ export async function downloadVotersCsv(opts: {
       afterId,
       limit: opts.pageSize ?? 1000,
     });
-    if (batch.length === 0) break;
+    if (!batch?.length) break;
     total += batch.length;
     const csv = votersToCsv(
       batch as unknown as Record<string, unknown>[],
@@ -80,7 +86,8 @@ export async function downloadVotersCsv(opts: {
     chunks.push(columns.map((c) => c).join(','));
   }
 
-  const blob = new Blob([chunks.join('\n')], {
+  // BOM so Excel opens UTF-8 correctly (same as FormHandler downloads).
+  const blob = new Blob(['\uFEFF' + chunks.join('\n')], {
     type: 'text/csv;charset=utf-8',
   });
   downloadBlob(blob, opts.filename);

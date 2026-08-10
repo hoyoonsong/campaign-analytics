@@ -1,6 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { json, requireCampaignUser } from '../../_lib/auth.js';
 import { buildLeanSyncPayload, campaignAdminClient } from '../../_lib/campaign.js';
+import {
+  applyLeanSyncFallback,
+  refreshPresenceBestEffort,
+} from '../../_lib/leanSyncFallback.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
@@ -29,7 +33,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const campaign = campaignAdminClient();
     const payload = await buildLeanSyncPayload(campaign);
 
-    const { data: syncResult, error: syncErr } = await ctx.voter.rpc(
+    let syncResult: unknown = null;
+    let usedFallback = false;
+
+    const { data: leanData, error: syncErr } = await ctx.voter.rpc(
       'apply_campaign_lean_sync',
       {
         p_contacts: payload.contacts,
@@ -40,52 +47,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     if (syncErr) {
-      // Lean sync can fail under pg_safeupdate (unqualified UPDATE). Still refresh
-      // map pins with contact fields so Analytics popups stay populated.
-      const { data: geoOnly, error: geoErr } = await ctx.voter.rpc(
-        'replace_campaign_geo',
-        { p_geo: payload.geo },
+      // Pre-0036 SQL still has an unqualified UPDATE; PostgREST safeupdate
+      // rejects it. Fall back to a WHERE-safe path so sync keeps working.
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[sync-campaign] lean RPC failed, using fallback:',
+        syncErr.message,
       );
-      await ctx.voter
-        .from('campaign_sync_state')
-        .update({
-          last_error: syncErr.message,
-          volunteer_count: payload.volunteer_count,
-          yard_sign_count: payload.yard_sign_count,
-          geo_point_count:
-            typeof (geoOnly as { geo_count?: number } | null)?.geo_count === 'number'
-              ? (geoOnly as { geo_count: number }).geo_count
-              : payload.geo.length,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', 1);
-      return json(res, 500, {
-        error: syncErr.message,
-        geo: geoErr ? { error: geoErr.message } : geoOnly,
-      });
+      syncResult = await applyLeanSyncFallback(ctx.voter, payload);
+      usedFallback = true;
+    } else {
+      syncResult = leanData;
     }
 
     let tagsResult: unknown = null;
     if (recomputeTags) {
       const { data, error } = await ctx.voter.rpc('recompute_supporter_tags');
       if (error) {
-        return json(res, 500, {
-          error: `Indexes synced but tag recompute failed: ${error.message}`,
-          sync: syncResult,
-        });
+        // eslint-disable-next-line no-console
+        console.warn('[sync-campaign] tag recompute failed', error.message);
+        tagsResult = { error: error.message };
+      } else {
+        tagsResult = data;
       }
-      tagsResult = data;
     }
 
-    let presenceCache: unknown = null;
-    {
-      const { data, error } = await ctx.voter.rpc('refresh_presence_cache');
-      if (error) {
-        console.warn('[sync-campaign] presence cache failed', error.message);
-      } else {
-        presenceCache = data;
-      }
-    }
+    const presenceCache = await refreshPresenceBestEffort(ctx.voter);
 
     const { data: state } = await ctx.voter
       .from('campaign_sync_state')
@@ -99,6 +86,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       tags: tagsResult,
       presence: presenceCache,
       state,
+      fallback: usedFallback || undefined,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Sync failed';

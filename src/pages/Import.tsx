@@ -211,8 +211,8 @@ export default function ImportPage() {
               </h2>
               <p className="mt-1 text-xs text-slate-500">
                 Read-only pull of volunteer / yard-sign links and map pins into the
-                voter DB (needs migrations 0015–0018). Search still shows nearby
-                distances from live FormHandler pins even before sync.
+                voter DB. Apply campaign migrations through 0038 for full SQL sync
+                (phone matching + faster path).
               </p>
               <p className="mt-2 text-[11px] text-slate-500">
                 Apply migrations:{' '}

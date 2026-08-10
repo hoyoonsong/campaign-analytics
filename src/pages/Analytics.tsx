@@ -22,9 +22,12 @@ import { VoterMap } from '../components/VoterMap';
 import { VoterProfileModal } from '../components/VoterProfileModal';
 import { logActivity } from '../lib/activityLog';
 import {
+  clearClientDataCaches,
   fetchAnalytics,
+  fetchCampaignSyncState,
   fetchFilterOptions,
   fetchMapPoints,
+  syncCampaignIndexes,
 } from '../lib/api';
 import { downloadVotersCsv, sleep } from '../lib/exportVotersCsv';
 import { emptyFilters, summarizeFilters } from '../lib/filters';
@@ -41,6 +44,7 @@ import {
 } from '../lib/petitionCombos';
 import type {
   AnalyticsSummary,
+  CampaignSyncState,
   CountBucket,
   MapPoint,
   SignedPetitionKey,
@@ -87,6 +91,61 @@ export default function Analytics() {
   const [profileId, setProfileId] = useState<number | null>(null);
   const [exportingKey, setExportingKey] = useState<PetitionVennKey | null>(null);
   const [exportingAll, setExportingAll] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncState, setSyncState] = useState<CampaignSyncState | null>(null);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  const runCampaignSync = async (opts?: {
+    recomputeTags?: boolean;
+    quiet?: boolean;
+  }) => {
+    setSyncing(true);
+    if (!opts?.quiet) setSyncNote(null);
+    try {
+      const res = await syncCampaignIndexes({
+        recompute_tags: opts?.recomputeTags !== false,
+      });
+      setSyncState(res.state);
+      const yard = res.state?.avg_nearby_yard_sign_miles;
+      const vol = res.state?.avg_nearby_volunteer_miles;
+      setSyncNote(
+        `Synced ${res.state?.volunteer_count ?? 0} volunteers, ${res.state?.yard_sign_count ?? 0} yard signs` +
+          (yard != null || vol != null
+            ? ` · avg ${yard != null ? Number(yard).toFixed(2) : '—'} mi YS / ${vol != null ? Number(vol).toFixed(2) : '—'} mi V`
+            : ''),
+      );
+      clearClientDataCaches();
+      setReloadToken((n) => n + 1);
+      return res.state;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Campaign sync failed');
+      return null;
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Auto-sync FormHandler on Analytics load (geo + avg nearby distances).
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const before = await fetchCampaignSyncState();
+        if (!active) return;
+        setSyncState(before.state);
+      } catch {
+        /* ignore */
+      }
+      if (!active) return;
+      await runCampaignSync({ recomputeTags: false, quiet: true });
+    })();
+    return () => {
+      active = false;
+    };
+    // Only on mount / hard reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     void fetchFilterOptions()
@@ -101,7 +160,8 @@ export default function Analytics() {
     const t = setTimeout(() => {
       void fetchAnalytics(filters)
         .then((data) => {
-          if (active) setSummary(data);
+          if (!active) return;
+          setSummary(data);
         })
         .catch((err: Error) => {
           if (active) setError(err.message);
@@ -109,12 +169,12 @@ export default function Analytics() {
         .finally(() => {
           if (active) setLoading(false);
         });
-    }, 250);
+    }, 150);
     return () => {
       active = false;
       clearTimeout(t);
     };
-  }, [filters]);
+  }, [filters, reloadToken]);
 
   useEffect(() => {
     setPoints([]);
@@ -146,7 +206,7 @@ export default function Analytics() {
       active = false;
       clearTimeout(t);
     };
-  }, [focusCounty]);
+  }, [focusCounty, reloadToken]);
 
   const countyCounts = useMemo(() => {
     const map: Record<string, number> = {};
@@ -276,19 +336,37 @@ export default function Analytics() {
         title="Analytics"
         description="Click a chart or stat to open that list in Search. Map clicks stay on the map."
         actions={
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setFiltersOpen(true)}
-          >
-            Filters
-            {activeFilterChips.length > 0
-              ? ` (${activeFilterChips.length})`
-              : ''}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={syncing}
+              onClick={() => void runCampaignSync({ recomputeTags: true })}
+              title={
+                syncState?.updated_at
+                  ? `Last sync ${new Date(syncState.updated_at).toLocaleString()}`
+                  : 'Sync FormHandler volunteers & yard signs'
+              }
+            >
+              {syncing ? 'Syncing…' : 'Sync FormHandler'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setFiltersOpen(true)}
+            >
+              Filters
+              {activeFilterChips.length > 0
+                ? ` (${activeFilterChips.length})`
+                : ''}
+            </button>
+          </div>
         }
       />
 
+      {syncNote ? (
+        <p className="mb-3 text-xs text-slate-500">{syncNote}</p>
+      ) : null}
       {activeFilterChips.length > 0 ? (
         <div className="mb-3 flex flex-wrap items-center gap-1.5">
           {activeFilterChips.slice(0, 8).map((chip) => (

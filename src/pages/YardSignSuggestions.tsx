@@ -151,7 +151,7 @@ export default function YardSignSuggestions() {
       lng: s.lng,
     }));
     const csv = votersToCsv(rows as unknown as Record<string, unknown>[], EXPORT_COLS);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
