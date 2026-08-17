@@ -5,7 +5,7 @@ import type {
   SignedPetitionKey,
   VoterFilters,
 } from './types';
-import { SIGNED_PETITION_OPTIONS } from './types';
+import { petitionLabel } from './petitions';
 import { summarizeAnyOfRule } from './supporterPresets';
 
 /** Sentinel for null/empty residence state in include & exclude filters. */
@@ -30,6 +30,8 @@ export function emptyFilters(): VoterFilters {
     signed: [],
     signed_any: null,
     signed_all_core: null,
+    signed_min: null,
+    signed_min_of: [],
     alignment_label: [],
     yard_sign: [],
     volunteer_interest: [],
@@ -50,6 +52,7 @@ export function emptyFilters(): VoterFilters {
     nearby_volunteer_max_miles: null,
     supporter_tag: [],
     any_of: [],
+    possible_duplicates: null,
     exclude: {},
   };
 }
@@ -74,6 +77,8 @@ export function toFilterPayload(f: VoterFilters): Record<string, unknown> {
   put('signed', f.signed);
   if (f.signed_any === true) out.signed_any = true;
   if (f.signed_all_core === true) out.signed_all_core = true;
+  if (f.signed_min != null && f.signed_min > 0) out.signed_min = f.signed_min;
+  put('signed_min_of', f.signed_min_of);
   put('alignment_label', f.alignment_label);
   put('yard_sign', f.yard_sign);
   put('volunteer_interest', f.volunteer_interest);
@@ -100,6 +105,7 @@ export function toFilterPayload(f: VoterFilters): Record<string, unknown> {
 
   // Indexed DB column (materialized by recompute_supporter_tags).
   put('supporter_tag', f.supporter_tag);
+  if (f.possible_duplicates === true) out.possible_duplicates = true;
 
   if (f.any_of?.length) {
     out.any_of = f.any_of.filter((r) => r.values?.length);
@@ -285,13 +291,21 @@ export function summarizeFilters(f: VoterFilters): string[] {
     );
   }
   if (f.signed?.length) {
-    const labels = f.signed.map(
-      (k) => SIGNED_PETITION_OPTIONS.find((o) => o.key === k)?.label ?? k,
-    );
+    const labels = f.signed.map((k) => petitionLabel(k));
     parts.push(`Signed: ${labels.join(' + ')}`);
   }
   if (f.signed_any) parts.push('Signed any petition');
   if (f.signed_all_core) parts.push('Signed all three core petitions');
+  if (f.signed_min != null && f.signed_min > 0) {
+    const of = f.signed_min_of?.length
+      ? ` of ${f.signed_min_of.map((k) => petitionLabel(k)).join(', ')}`
+      : '';
+    parts.push(
+      f.signed_min === 2
+        ? `Super signers (2+${of})`
+        : `Signed ≥${f.signed_min}${of}`,
+    );
+  }
   tag('Alignment', f.alignment_label);
   tag('Yard sign', f.yard_sign);
   tag('Volunteer', f.volunteer_interest);
@@ -322,6 +336,7 @@ export function summarizeFilters(f: VoterFilters): string[] {
     );
   }
   tag('Tag', f.supporter_tag);
+  if (f.possible_duplicates) parts.push('Possible duplicates');
   if (f.any_of?.length) {
     parts.push(
       `Match any: ${f.any_of.map((r) => summarizeAnyOfRule(r)).join(' OR ')}`,
@@ -330,9 +345,7 @@ export function summarizeFilters(f: VoterFilters): string[] {
 
   const ex = f.exclude ?? {};
   if (ex.signed?.length) {
-    const labels = ex.signed.map(
-      (k) => SIGNED_PETITION_OPTIONS.find((o) => o.key === k)?.label ?? k,
-    );
+    const labels = ex.signed.map((k) => petitionLabel(k));
     parts.push(`Exclude signed: ${labels.join(', ')}`);
   }
   tag('Exclude tag', ex.supporter_tag);

@@ -4,7 +4,20 @@ import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
 function isEmptyFilters(filters: unknown): boolean {
   if (filters == null) return true;
   if (typeof filters !== 'object') return true;
-  return Object.keys(filters as Record<string, unknown>).length === 0;
+  // Petition slugs only change the charts — slice those client-side.
+  const keys = Object.keys(filters as Record<string, unknown>).filter(
+    (k) => k !== 'petitions',
+  );
+  return keys.length === 0;
+}
+
+function cachedPetitionCount(cached: Record<string, unknown> | null): number {
+  if (!cached) return 0;
+  const petitions = cached.petitions;
+  if (Array.isArray(petitions) && petitions.length) return petitions.length;
+  const rows = cached.by_signature;
+  if (Array.isArray(rows) && rows.length) return rows.length;
+  return 0;
 }
 
 function mergePresence(
@@ -45,7 +58,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Fast path: unfiltered Analytics from cache (refreshed on campaign sync).
   if (empty) {
-    const { data: cache, error: cacheErr } = await cachePromise;
+    const [{ data: cache, error: cacheErr }, activeRes] = await Promise.all([
+      cachePromise,
+      ctx.voter
+        .from('petitions')
+        .select('id', { count: 'exact', head: true })
+        .eq('is_active', true),
+    ]);
     if (cacheErr) {
       return json(res, 500, { error: cacheErr.message });
     }
@@ -54,10 +73,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       cached && typeof cached === 'object'
         ? (cached as Record<string, unknown>)
         : null;
-    const hasVenn =
-      cachedObj?.petition_venn != null &&
-      typeof cachedObj.petition_venn === 'object';
-    if (cachedObj && hasVenn) {
+    const hasCombos = Array.isArray(cachedObj?.petition_combos);
+    const activeCount = activeRes.count ?? 0;
+    const cacheCoversAll =
+      cachedPetitionCount(cachedObj) >= activeCount && activeCount > 0;
+    if (cachedObj && hasCombos && cacheCoversAll) {
       return json(
         res,
         200,
@@ -71,11 +91,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ),
       );
     }
-    // Cache miss or pre-petition_venn snapshot — compute once and store.
+    // Cache miss or pre-petition_combos snapshot — compute once and store.
     const { data, error } = await ctx.voter.rpc('voter_analytics_summary', {
       filters: {},
     });
-    if (error) return json(res, 500, { error: error.message });
+    if (error) {
+      if (cachedObj) {
+        return json(
+          res,
+          200,
+          mergePresence(
+            {
+              ...cachedObj,
+              analytics_from_cache: true,
+              analytics_summary_cached_at: cache?.analytics_summary_cached_at ?? null,
+            },
+            cache,
+          ),
+        );
+      }
+      return json(res, 500, { error: error.message });
+    }
     const summary = (data ?? {}) as Record<string, unknown>;
     await ctx.voter
       .from('campaign_sync_state')

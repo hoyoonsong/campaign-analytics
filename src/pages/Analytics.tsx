@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactElement } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Bar,
   BarChart,
@@ -9,18 +9,20 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-} from 'recharts';
-import { Alert, EmptyState, PageHeader, Spinner } from '../components/ui';
-import { PetitionExportModal } from '../components/PetitionExportModal';
-import { PetitionVenn } from '../components/PetitionVenn';
+} from "recharts";
+import { Alert, EmptyState, PageHeader, Spinner } from "../components/ui";
+import { PetitionCombinations } from "../components/PetitionCombinations";
+import { PetitionExportModal } from "../components/PetitionExportModal";
+import { PetitionPicker } from "../components/PetitionPicker";
+import { PetitionSignatureBars } from "../components/PetitionSignatureBars";
 import {
   EMPTY_FILTER_OPTIONS,
   mergeOptions,
   VoterFiltersPanel,
-} from '../components/VoterFiltersPanel';
-import { VoterMap } from '../components/VoterMap';
-import { VoterProfileModal } from '../components/VoterProfileModal';
-import { logActivity } from '../lib/activityLog';
+} from "../components/VoterFiltersPanel";
+import { VoterMap } from "../components/VoterMap";
+import { VoterProfileModal } from "../components/VoterProfileModal";
+import { logActivity } from "../lib/activityLog";
 import {
   clearClientDataCaches,
   fetchAnalytics,
@@ -28,40 +30,45 @@ import {
   fetchFilterOptions,
   fetchMapPoints,
   syncCampaignIndexes,
-} from '../lib/api';
-import { downloadVotersCsv, sleep } from '../lib/exportVotersCsv';
-import { emptyFilters, summarizeFilters } from '../lib/filters';
-import { normalizeCountyName } from '../lib/idahoCounties';
+} from "../lib/api";
+import { downloadVotersCsv, sleep } from "../lib/exportVotersCsv";
+import { emptyFilters, summarizeFilters } from "../lib/filters";
+import { normalizeCountyName } from "../lib/idahoCounties";
+import { ageBandToRange, navigateToSearch } from "../lib/navigateToSearch";
 import {
-  ageBandToRange,
-  navigateToSearch,
-} from '../lib/navigateToSearch';
-import {
-  PETITION_COMBOS,
+  bitCount,
+  buildPetitionUnits,
+  collapseCombosToUnits,
   comboExportFilename,
-  mergeFiltersWithSegment,
-  type PetitionVennKey,
-} from '../lib/petitionCombos';
+  filtersForSignedAny,
+  mergeFiltersWithCombo,
+  mergeFiltersWithUnitCombo,
+  sliceSummaryToPetitions,
+  superSignerFilters,
+  usePetitions,
+  useSelectedPetitions,
+} from "../lib/petitions";
 import type {
   AnalyticsSummary,
   CampaignSyncState,
   CountBucket,
   MapPoint,
-  SignedPetitionKey,
   VoterFilters,
-} from '../lib/types';
+} from "../lib/types";
 
-const CHART_BLUE = '#1d4ed8';
-const CHART_TEAL = '#0f766e';
-const CHART_AMBER = '#b45309';
-const CHART_SLATE = '#475569';
-const AGE_ORDER = ['Under 18', '18–24', '25–34', '35–44', '45–54', '55–64', '65+', 'Unknown'];
-
-const PETITION_SIGNED_KEYS: Record<string, SignedPetitionKey> = {
-  'Open Primaries': 'open_primaries',
-  'Reproductive Freedom': 'reproductive_freedom',
-  'Medical Marijuana (VAL)': 'medical_marijuana_valid',
-};
+const CHART_BLUE = "#1d4ed8";
+const CHART_AMBER = "#b45309";
+const CHART_SLATE = "#475569";
+const AGE_ORDER = [
+  "Under 18",
+  "18–24",
+  "25–34",
+  "35–44",
+  "45–54",
+  "55–64",
+  "65+",
+  "Unknown",
+];
 
 export default function Analytics() {
   const navigate = useNavigate();
@@ -72,7 +79,7 @@ export default function Analytics() {
   const [points, setPoints] = useState<MapPoint[]>([]);
   const [campaignGeo, setCampaignGeo] = useState<
     Array<{
-      kind: 'volunteer' | 'yard_sign';
+      kind: "volunteer" | "yard_sign";
       lat: number;
       lng: number;
       source_id?: string;
@@ -88,13 +95,25 @@ export default function Analytics() {
   const [pinsLoading, setPinsLoading] = useState(false);
   const [focusCounty, setFocusCounty] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [profileId, setProfileId] = useState<number | null>(null);
-  const [exportingKey, setExportingKey] = useState<PetitionVennKey | null>(null);
+  const [exportingKey, setExportingKey] = useState<string | number | null>(
+    null,
+  );
   const [exportingAll, setExportingAll] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncState, setSyncState] = useState<CampaignSyncState | null>(null);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const { activePetitions: allPetitions, groups: petitionGroups } =
+    usePetitions();
+  const {
+    slugs: selectedSlugs,
+    selected: selectedPetitions,
+    setSelectedSlugs,
+    selectAll,
+    selectDefaults,
+  } = useSelectedPetitions(allPetitions);
 
   const runCampaignSync = async (opts?: {
     recomputeTags?: boolean;
@@ -112,21 +131,22 @@ export default function Analytics() {
       setSyncNote(
         `Synced ${res.state?.volunteer_count ?? 0} volunteers, ${res.state?.yard_sign_count ?? 0} yard signs` +
           (yard != null || vol != null
-            ? ` · avg ${yard != null ? Number(yard).toFixed(2) : '—'} mi YS / ${vol != null ? Number(vol).toFixed(2) : '—'} mi V`
-            : ''),
+            ? ` · avg ${yard != null ? Number(yard).toFixed(2) : "—"} mi YS / ${vol != null ? Number(vol).toFixed(2) : "—"} mi V`
+            : ""),
       );
       clearClientDataCaches();
       setReloadToken((n) => n + 1);
       return res.state;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Campaign sync failed');
+      setError(err instanceof Error ? err.message : "Campaign sync failed");
       return null;
     } finally {
       setSyncing(false);
     }
   };
 
-  // Auto-sync FormHandler on Analytics load (geo + avg nearby distances).
+  // Auto-sync FormHandler in the background after Analytics has loaded.
+  // Running it on mount raced the summary RPC and timed the free-tier DB out.
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -134,9 +154,17 @@ export default function Analytics() {
         const before = await fetchCampaignSyncState();
         if (!active) return;
         setSyncState(before.state);
+        const last = before.state?.last_success_at
+          ? Date.parse(before.state.last_success_at)
+          : 0;
+        if (Number.isFinite(last) && Date.now() - last < 30 * 60 * 1000) {
+          return;
+        }
       } catch {
         /* ignore */
       }
+      if (!active) return;
+      await new Promise((r) => setTimeout(r, 1500));
       if (!active) return;
       await runCampaignSync({ recomputeTags: false, quiet: true });
     })();
@@ -180,15 +208,13 @@ export default function Analytics() {
     setPoints([]);
     setCampaignGeo([]);
     setTruncated(false);
+    setMapError(null);
     if (!focusCounty) return;
 
     let active = true;
     setPinsLoading(true);
     const t = setTimeout(() => {
-      void fetchMapPoints(
-        { ...emptyFilters(), county: [focusCounty] },
-        8000,
-      )
+      void fetchMapPoints({ ...emptyFilters(), county: [focusCounty] }, 2500)
         .then((data) => {
           if (!active) return;
           setPoints(data.points ?? []);
@@ -196,7 +222,7 @@ export default function Analytics() {
           setCampaignGeo(data.campaign_geo ?? []);
         })
         .catch((err: Error) => {
-          if (active) setError(err.message);
+          if (active) setMapError(err.message);
         })
         .finally(() => {
           if (active) setPinsLoading(false);
@@ -225,42 +251,81 @@ export default function Analytics() {
 
   const activeFilterChips = useMemo(() => summarizeFilters(filters), [filters]);
 
-  const sig = summary?.signatures;
-  const petitionBars = useMemo(() => {
-    const rows = summary?.by_signature ?? [];
-    const preferred = [
-      'Open Primaries',
-      'Reproductive Freedom',
-      'Medical Marijuana (VAL)',
-    ];
-    const byKey = new Map(rows.map((r) => [r.key, r.count]));
-    return preferred.map((key) => ({
-      name: key,
-      signed: byKey.get(key) ?? 0,
-      pct: summary?.total ? ((byKey.get(key) ?? 0) / summary.total) * 100 : 0,
-    }));
-  }, [summary]);
+  const chartSummary = useMemo(
+    () =>
+      summary ? sliceSummaryToPetitions(summary, selectedPetitions) : null,
+    [summary, selectedPetitions],
+  );
+
+  const petitionUnits = useMemo(
+    () => buildPetitionUnits(selectedPetitions, petitionGroups),
+    [selectedPetitions, petitionGroups],
+  );
+
+  const petitionCountsBySlug = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of chartSummary?.by_signature ?? []) {
+      if (r.slug) map.set(r.slug, r.count);
+    }
+    return map;
+  }, [chartSummary]);
+
+  const unitSuperSigners = useMemo(() => {
+    return collapseCombosToUnits(chartSummary?.petition_combos, petitionUnits)
+      .filter((c) => bitCount(c.mask) >= 2)
+      .reduce((s, c) => s + (Number(c.count) || 0), 0);
+  }, [chartSummary, petitionUnits]);
 
   const goSearch = (patch: Partial<VoterFilters>) => {
     navigateToSearch(navigate, { ...filters, ...patch });
   };
 
-  const exportSegment = async (key: PetitionVennKey) => {
+  const exportSignedAny = async (
+    slugs: string[],
+    filename: string,
+    key: string,
+  ) => {
     setExportingKey(key);
     setError(null);
     try {
-      const merged = mergeFiltersWithSegment(filters, key);
+      const {
+        signed: _s,
+        signed_min: _m,
+        signed_min_of: _o,
+        ...rest
+      } = filters;
       const count = await downloadVotersCsv({
-        filters: merged,
-        filename: comboExportFilename(key),
+        filters: { ...rest, ...filtersForSignedAny(slugs) },
+        filename,
       });
       void logActivity({
-        action: 'export',
-        entityType: 'voter',
-        metadata: { label: `Petition combo CSV (${key})`, count },
+        action: "export",
+        entityType: "voter",
+        metadata: { label: filename, count },
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Export failed');
+      setError(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExportingKey(null);
+    }
+  };
+
+  const exportSegment = async (mask: number) => {
+    setExportingKey(mask);
+    setError(null);
+    try {
+      const merged = mergeFiltersWithCombo(filters, mask, selectedPetitions);
+      const count = await downloadVotersCsv({
+        filters: merged,
+        filename: comboExportFilename(mask, selectedPetitions),
+      });
+      void logActivity({
+        action: "export",
+        entityType: "voter",
+        metadata: { label: `Petition combo CSV (${mask})`, count },
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed");
     } finally {
       setExportingKey(null);
     }
@@ -271,23 +336,33 @@ export default function Analytics() {
     setError(null);
     try {
       let total = 0;
-      for (const combo of PETITION_COMBOS) {
-        setExportingKey(combo.key);
-        const merged = mergeFiltersWithSegment(filters, combo.key);
+      const rows = [...(chartSummary?.petition_combos ?? [])]
+        .map((c) => ({ mask: Number(c.mask), count: Number(c.count) || 0 }))
+        .filter((c) => c.count > 0 && c.mask !== 0);
+      for (const combo of rows) {
+        setExportingKey(combo.mask);
+        const merged = mergeFiltersWithCombo(
+          filters,
+          combo.mask,
+          selectedPetitions,
+        );
         const count = await downloadVotersCsv({
           filters: merged,
-          filename: comboExportFilename(combo.key),
+          filename: comboExportFilename(combo.mask, selectedPetitions),
         });
         total += count;
         await sleep(400);
       }
       void logActivity({
-        action: 'export',
-        entityType: 'voter',
-        metadata: { label: 'Petition combo CSV (all 7)', count: total },
+        action: "export",
+        entityType: "voter",
+        metadata: {
+          label: `Petition combo CSV (all ${rows.length})`,
+          count: total,
+        },
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Export failed');
+      setError(err instanceof Error ? err.message : "Export failed");
     } finally {
       setExportingKey(null);
       setExportingAll(false);
@@ -300,7 +375,10 @@ export default function Analytics() {
   );
 
   const partyBars = useMemo(
-    () => (summary?.by_party ?? []).slice(0, 8).map((r) => ({ name: r.key, count: r.count })),
+    () =>
+      (summary?.by_party ?? [])
+        .slice(0, 8)
+        .map((r) => ({ name: r.key, count: r.count })),
     [summary],
   );
 
@@ -345,10 +423,10 @@ export default function Analytics() {
               title={
                 syncState?.updated_at
                   ? `Last sync ${new Date(syncState.updated_at).toLocaleString()}`
-                  : 'Sync FormHandler volunteers & yard signs'
+                  : "Sync FormHandler volunteers & yard signs"
               }
             >
-              {syncing ? 'Syncing…' : 'Sync FormHandler'}
+              {syncing ? "Syncing…" : "Sync FormHandler"}
             </button>
             <button
               type="button"
@@ -358,7 +436,7 @@ export default function Analytics() {
               Filters
               {activeFilterChips.length > 0
                 ? ` (${activeFilterChips.length})`
-                : ''}
+                : ""}
             </button>
           </div>
         }
@@ -400,20 +478,40 @@ export default function Analytics() {
         onChange={setFilters}
         options={options}
         matchCount={summary?.total ?? null}
+        showPossibleDuplicates={false}
       />
 
       <PetitionExportModal
         open={exportOpen}
         onClose={() => setExportOpen(false)}
-        counts={summary?.petition_venn}
+        units={petitionUnits}
+        petitions={selectedPetitions}
+        combos={chartSummary?.petition_combos}
         exportingKey={exportingKey}
         exportingAll={exportingAll}
-        onExportSegment={(key) => void exportSegment(key)}
+        onExportUnit={(unit) =>
+          void exportSignedAny(
+            unit.petitions.map((p) => p.slug),
+            `petition-${unit.short_label.replace(/\s+/g, "-")}-${new Date().toISOString().slice(0, 10)}.csv`,
+            unit.key,
+          )
+        }
+        onExportPetition={(p) =>
+          void exportSignedAny(
+            [p.slug],
+            `petition-${p.slug}-${new Date().toISOString().slice(0, 10)}.csv`,
+            `p:${p.slug}`,
+          )
+        }
+        onExportSegment={(mask) => void exportSegment(mask)}
         onExportAll={() => void exportAllCombos()}
       />
 
       <div className="space-y-3">
         {error && <Alert variant="error">{error}</Alert>}
+        {loading && summary ? (
+          <p className="text-xs text-slate-500">Updating analytics…</p>
+        ) : null}
 
         {loading && !summary ? (
           <Spinner label="Loading analytics…" />
@@ -442,7 +540,7 @@ export default function Analytics() {
                   Number(summary.supporters ?? 0),
                   interestUniverse,
                 )}
-                onClick={() => goSearch({ supporter_tag: ['supporter'] })}
+                onClick={() => goSearch({ supporter_tag: ["supporter"] })}
               />
               <StatCard
                 label="Maybe"
@@ -451,7 +549,7 @@ export default function Analytics() {
                   Number(summary.maybes ?? 0),
                   interestUniverse,
                 )}
-                onClick={() => goSearch({ supporter_tag: ['maybe'] })}
+                onClick={() => goSearch({ supporter_tag: ["maybe"] })}
               />
               <StatCard
                 label="Opposed"
@@ -460,7 +558,7 @@ export default function Analytics() {
                   Number(summary.opposed ?? 0),
                   interestUniverse,
                 )}
-                onClick={() => goSearch({ supporter_tag: ['opposed'] })}
+                onClick={() => goSearch({ supporter_tag: ["opposed"] })}
               />
             </div>
 
@@ -473,7 +571,7 @@ export default function Analytics() {
                   <p className="text-lg font-bold text-slate-900">
                     {summary.avg_nearby_yard_sign_miles != null
                       ? `${Number(summary.avg_nearby_yard_sign_miles).toLocaleString(undefined, { maximumFractionDigits: 2 })} mi`
-                      : '—'}
+                      : "—"}
                   </p>
                 </div>
               </div>
@@ -485,7 +583,7 @@ export default function Analytics() {
                   <p className="text-lg font-bold text-slate-900">
                     {summary.avg_nearby_volunteer_miles != null
                       ? `${Number(summary.avg_nearby_volunteer_miles).toLocaleString(undefined, { maximumFractionDigits: 2 })} mi`
-                      : '—'}
+                      : "—"}
                   </p>
                 </div>
               </div>
@@ -493,85 +591,29 @@ export default function Analytics() {
 
             <div className="grid gap-3 lg:grid-cols-2">
               <section className="card p-3">
-                <h3 className="mb-1 text-sm font-semibold text-slate-800">
-                  Petition signatures
-                </h3>
-                <p className="mb-2 text-xs text-slate-500">
-                  Click a bar to open that petition list in Search.
-                </p>
-                <div className="h-44">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={petitionBars}
-                      layout="vertical"
-                      margin={{ left: 4, right: 12, top: 4, bottom: 4 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                      <XAxis
-                        type="number"
-                        tickFormatter={(v) => Number(v).toLocaleString()}
-                        tick={{ fontSize: 10 }}
-                      />
-                      <YAxis
-                        type="category"
-                        dataKey="name"
-                        width={130}
-                        tick={{ fontSize: 10 }}
-                      />
-                      <Tooltip
-                        formatter={(value, _n, item) => {
-                          const v = Number(value ?? 0);
-                          const p = item?.payload?.pct as number | undefined;
-                          return [
-                            `${v.toLocaleString()}${p != null ? ` (${p.toFixed(1)}%)` : ''}`,
-                            'Signed',
-                          ];
-                        }}
-                      />
-                      <Bar
-                        dataKey="signed"
-                        radius={[0, 4, 4, 0]}
-                        cursor="pointer"
-                        onClick={(data) => {
-                          const name = (data as { name?: string })?.name;
-                          const key = name ? PETITION_SIGNED_KEYS[name] : null;
-                          if (key) goSearch({ signed: [key] });
-                        }}
-                      >
-                        {petitionBars.map((_, i) => (
-                          <Cell
-                            key={i}
-                            fill={[CHART_BLUE, CHART_TEAL, CHART_AMBER][i % 3]}
-                          />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="mt-2 grid grid-cols-3 gap-1.5">
-                  <MiniStat
-                    label="Open Primaries"
-                    value={sig?.open_primaries ?? 0}
-                    total={summary.total}
-                    onClick={() => goSearch({ signed: ['open_primaries'] })}
-                  />
-                  <MiniStat
-                    label="Repro Freedom"
-                    value={sig?.reproductive_freedom ?? 0}
-                    total={summary.total}
-                    onClick={() =>
-                      goSearch({ signed: ['reproductive_freedom'] })
-                    }
-                  />
-                  <MiniStat
-                    label="MMJ VAL"
-                    value={sig?.medical_marijuana_valid ?? 0}
-                    total={summary.total}
-                    onClick={() =>
-                      goSearch({ signed: ['medical_marijuana_valid'] })
-                    }
+                <div className="mb-1 flex items-start justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-slate-800">
+                    Petition Totals
+                  </h3>
+                  <PetitionPicker
+                    all={allPetitions}
+                    groups={petitionGroups}
+                    selectedSlugs={selectedSlugs}
+                    onChange={setSelectedSlugs}
+                    onSelectAll={selectAll}
+                    onSelectDefaults={selectDefaults}
                   />
                 </div>
+
+                <PetitionSignatureBars
+                  units={petitionUnits}
+                  combos={chartSummary?.petition_combos}
+                  countsBySlug={petitionCountsBySlug}
+                  totalVoters={summary.total}
+                  onSelectSlugs={(slugs) =>
+                    goSearch(filtersForSignedAny(slugs))
+                  }
+                />
               </section>
 
               <section className="card p-3">
@@ -579,30 +621,67 @@ export default function Analytics() {
                   <h3 className="text-sm font-semibold text-slate-800">
                     Petition combinations
                   </h3>
-                  <button
-                    type="button"
-                    className="btn-primary shrink-0 px-3 py-1.5 text-xs"
-                    onClick={() => setExportOpen(true)}
-                  >
-                    Export
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {petitionUnits.length >= 2 && petitionUnits.length <= 3 ? (
+                      <button
+                        type="button"
+                        className="rounded-md bg-slate-50 px-2 py-1 text-left hover:bg-slate-100"
+                        onClick={() =>
+                          goSearch({
+                            signed: [],
+                            ...superSignerFilters(selectedPetitions),
+                          })
+                        }
+                      >
+                        <p className="text-[10px] text-slate-500">
+                          Super signers
+                        </p>
+                        <p className="text-xs font-semibold text-slate-900">
+                          {unitSuperSigners.toLocaleString()}
+                        </p>
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="btn-primary px-3 py-1.5 text-xs"
+                      onClick={() => setExportOpen(true)}
+                    >
+                      Export
+                    </button>
+                  </div>
                 </div>
-                <PetitionVenn
+                <PetitionCombinations
                   compact
-                  counts={summary.petition_venn}
-                  onSelectSegment={(key) =>
-                    navigateToSearch(navigate, mergeFiltersWithSegment(filters, key))
+                  units={petitionUnits}
+                  combos={chartSummary?.petition_combos}
+                  onSelectUnitCombo={(mask) =>
+                    navigateToSearch(
+                      navigate,
+                      mergeFiltersWithUnitCombo(filters, mask, petitionUnits),
+                    )
+                  }
+                  onSelectPetitionExclusive={(p) =>
+                    navigateToSearch(
+                      navigate,
+                      mergeFiltersWithCombo(
+                        filters,
+                        2 ** p.bit_index,
+                        selectedPetitions,
+                      ),
+                    )
+                  }
+                  onSelectSuperSigners={() =>
+                    goSearch({
+                      signed: [],
+                      ...superSignerFilters(selectedPetitions),
+                    })
                   }
                 />
               </section>
             </div>
 
             <div className="grid gap-3 lg:grid-cols-3">
-              <ChartCard
-                title="By party"
-                subtitle="Click a bar → Search"
-                height="h-48"
-              >
+              <ChartCard title="By party" height="h-48">
                 <BarChart
                   data={partyBars}
                   layout="vertical"
@@ -627,20 +706,16 @@ export default function Analytics() {
                     radius={[0, 4, 4, 0]}
                     cursor="pointer"
                     onClick={(data) => {
-                      const name = (data as { name?: string; payload?: { name?: string } })
-                        ?.payload?.name
-                        ?? (data as { name?: string })?.name;
+                      const name =
+                        (data as { name?: string; payload?: { name?: string } })
+                          ?.payload?.name ?? (data as { name?: string })?.name;
                       if (name) goSearch({ party: [name] });
                     }}
                   />
                 </BarChart>
               </ChartCard>
 
-              <ChartCard
-                title="By age"
-                subtitle="Click a bar → Search"
-                height="h-48"
-              >
+              <ChartCard title="By age" height="h-48">
                 <BarChart
                   data={ageBars}
                   margin={{ left: 0, right: 8, top: 8, bottom: 0 }}
@@ -659,9 +734,9 @@ export default function Analytics() {
                     radius={[4, 4, 0, 0]}
                     cursor="pointer"
                     onClick={(data) => {
-                      const name = (data as { name?: string; payload?: { name?: string } })
-                        ?.payload?.name
-                        ?? (data as { name?: string })?.name;
+                      const name =
+                        (data as { name?: string; payload?: { name?: string } })
+                          ?.payload?.name ?? (data as { name?: string })?.name;
                       if (!name) return;
                       const range = ageBandToRange(name);
                       if (range) goSearch(range);
@@ -698,9 +773,9 @@ export default function Analytics() {
                     radius={[0, 4, 4, 0]}
                     cursor="pointer"
                     onClick={(data) => {
-                      const name = (data as { name?: string; payload?: { name?: string } })
-                        ?.payload?.name
-                        ?? (data as { name?: string })?.name;
+                      const name =
+                        (data as { name?: string; payload?: { name?: string } })
+                          ?.payload?.name ?? (data as { name?: string })?.name;
                       if (name) goSearch({ county: [name] });
                     }}
                   >
@@ -716,8 +791,8 @@ export default function Analytics() {
               <div>
                 <h3 className="text-sm font-semibold text-slate-800">Map</h3>
                 <p className="text-xs text-slate-500">
-                  Click a county to zoom and show pins. Chart clicks open Search —
-                  map stays here.
+                  Click a county to zoom and show pins. Chart clicks open Search
+                  — map stays here.
                 </p>
               </div>
               {pinsLoading && focusCounty && (
@@ -725,6 +800,9 @@ export default function Analytics() {
                   Loading pins for {focusCounty}…
                 </p>
               )}
+              {mapError && focusCounty ? (
+                <Alert variant="error">{mapError}</Alert>
+              ) : null}
               <VoterMap
                 countyCounts={countyCounts}
                 focusCounty={focusCounty}
@@ -758,13 +836,8 @@ function orderBuckets(rows: CountBucket[], order: string[]) {
     .map((name) => ({ name, count: byKey.get(name) ?? 0 }));
 }
 
-function pct(part: number, total: number) {
-  if (!total) return '0%';
-  return `${((100 * part) / total).toFixed(1)}%`;
-}
-
 function pctOfInterest(part: number, taggedTotal: number) {
-  if (!taggedTotal) return '0% of tagged';
+  if (!taggedTotal) return "0% of tagged";
   return `${((100 * part) / taggedTotal).toFixed(1)}% of tagged`;
 }
 
@@ -779,46 +852,17 @@ function StatCard({
   hint?: string;
   onClick?: () => void;
 }) {
-  const display = value == null ? '—' : value.toLocaleString();
-  const className = `card p-3 text-left ${onClick ? 'cursor-pointer transition hover:border-brand-300 hover:bg-brand-50/40' : ''}`;
+  const display = value == null ? "—" : value.toLocaleString();
+  const className = `card p-3 text-left ${onClick ? "cursor-pointer transition hover:border-brand-300 hover:bg-brand-50/40" : ""}`;
   const body = (
     <>
       <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
         {label}
       </p>
       <p className="mt-0.5 text-xl font-bold text-slate-900">{display}</p>
-      {hint ? <p className="mt-0.5 text-[11px] text-slate-500">{hint}</p> : null}
-    </>
-  );
-  if (onClick) {
-    return (
-      <button type="button" className={className} onClick={onClick}>
-        {body}
-      </button>
-    );
-  }
-  return <div className={className}>{body}</div>;
-}
-
-function MiniStat({
-  label,
-  value,
-  total,
-  onClick,
-}: {
-  label: string;
-  value: number;
-  total: number;
-  onClick?: () => void;
-}) {
-  const className = `rounded-md bg-slate-50 px-2 py-1.5 text-left ${onClick ? 'cursor-pointer hover:bg-slate-100' : ''}`;
-  const body = (
-    <>
-      <p className="text-[10px] text-slate-500">{label}</p>
-      <p className="text-xs font-semibold text-slate-900">
-        {value.toLocaleString()}{' '}
-        <span className="font-normal text-slate-500">({pct(value, total)})</span>
-      </p>
+      {hint ? (
+        <p className="mt-0.5 text-[11px] text-slate-500">{hint}</p>
+      ) : null}
     </>
   );
   if (onClick) {
@@ -835,7 +879,7 @@ function ChartCard({
   title,
   subtitle,
   children,
-  height = 'h-48',
+  height = "h-48",
 }: {
   title: string;
   subtitle?: string;

@@ -17,6 +17,7 @@ const ROUTES: Record<string, () => Promise<{ default: Handler }>> = {
   'sync-campaign': () => import('./_handlers/voter/sync-campaign.js'),
   'undo-import': () => import('./_handlers/voter/undo-import.js'),
   universes: () => import('./_handlers/voter/universes.js'),
+  petitions: () => import('./_handlers/voter/petitions.js'),
   usage: () => import('./_handlers/voter/usage.js'),
   'yard-sign-suggestions': () => import('./_handlers/voter/yard-sign-suggestions.js'),
 };

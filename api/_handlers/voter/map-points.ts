@@ -26,7 +26,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const [{ data, error }, geoRes] = await Promise.all([
     ctx.voter.rpc('voter_map_points', {
       filters: body.filters ?? {},
-      lim: body.limit ?? 5000,
+      lim: body.limit ?? 2500,
     }),
     fetchAllCampaignGeo(ctx.voter),
   ]);

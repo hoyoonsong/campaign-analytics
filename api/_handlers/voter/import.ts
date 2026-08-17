@@ -63,6 +63,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return json(res, 400, { error: result.error, batch_id: batchId });
   }
 
+  const hasSignatures = rows.some(
+    (r) => r.signatures && typeof r.signatures === 'object',
+  );
+  if (hasSignatures) {
+    const { error: sigErr } = await ctx.voter.rpc('voter_apply_batch_signatures', {
+      rows,
+      batch_id: batchId,
+    });
+    if (sigErr) {
+      return json(res, 500, {
+        error: sigErr.message,
+        batch_id: batchId,
+        inserted: result.inserted ?? 0,
+        updated: result.updated ?? 0,
+      });
+    }
+  }
+
   return json(res, 200, {
     inserted: result.inserted ?? 0,
     updated: result.updated ?? 0,

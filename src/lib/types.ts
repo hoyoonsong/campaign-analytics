@@ -7,12 +7,8 @@ export interface Profile {
   role: ProfileRole | string;
 }
 
-/** Petition keys for `signed` filter (AND when include; NOT each when exclude). */
-export type SignedPetitionKey =
-  | 'open_primaries'
-  | 'reproductive_freedom'
-  | 'achilles'
-  | 'medical_marijuana_valid';
+/** Petition slug for `signed` filter (AND when include; NOT each when exclude). */
+export type SignedPetitionKey = string;
 
 /** Attributes that can be used in the Exclude Profiles builder (mirrors include filters). */
 export type ExcludeAttrKey =
@@ -113,6 +109,10 @@ export interface VoterFilters {
   signed?: SignedPetitionKey[];
   signed_any?: boolean | null;
   signed_all_core?: boolean | null;
+  /** Minimum number of selected petitions signed (Super signers = 2). */
+  signed_min?: number | null;
+  /** Slugs to count toward `signed_min`. Defaults to all bits if omitted. */
+  signed_min_of?: SignedPetitionKey[];
   alignment_label?: string[];
   yard_sign?: string[];
   volunteer_interest?: string[];
@@ -141,19 +141,13 @@ export interface VoterFilters {
   state?: string[];
   /** Match if ANY of these rules is true (cross-field OR). */
   any_of?: FilterAnyOfRule[];
+  /** Rows that share email, phone, voter ID, or name+street with another voter. */
+  possible_duplicates?: boolean | null;
   /** Separate exclude rules (Organizer-style Exclude Profiles). */
   exclude?: ExcludeRules;
 }
 
-export const SIGNED_PETITION_OPTIONS: { key: SignedPetitionKey; label: string }[] = [
-  { key: 'open_primaries', label: 'Open Primaries' },
-  {
-    key: 'reproductive_freedom',
-    label: 'Reproductive Freedom (True or VAL)',
-  },
-  { key: 'achilles', label: 'Achilles Petition' },
-  { key: 'medical_marijuana_valid', label: 'Medical Marijuana (VAL)' },
-];
+export const SIGNED_PETITION_OPTIONS: { key: SignedPetitionKey; label: string }[] = [];
 
 export interface VoterRow {
   id: number;
@@ -202,21 +196,37 @@ export interface MapPoint {
 export interface CountBucket {
   key: string;
   count: number;
+  slug?: string;
 }
 
 export interface SignatureStats {
-  open_primaries: number;
-  reproductive_freedom: number;
-  achilles_petition: number;
-  medical_cannabis: number;
-  medical_marijuana_valid: number;
-  reproductive_freedom_valid: number;
-  signed_all_core: number;
-  signed_all_four: number;
-  signed_any: number;
+  signed_all_core?: number;
+  signed_any?: number;
+  super_signers?: number;
+  open_primaries?: number;
+  reproductive_freedom?: number;
+  achilles_petition?: number;
+  medical_cannabis?: number;
+  medical_marijuana_valid?: number;
+  reproductive_freedom_valid?: number;
+  signed_all_four?: number;
 }
 
-/** Exclusive OP × RF × MMJ Venn segment (Achilles ignored). */
+export interface PetitionComboCount {
+  mask: number;
+  count: number;
+}
+
+export interface AnalyticsPetition {
+  slug: string;
+  label: string;
+  short_label: string;
+  bit_index: number;
+  sort_order: number;
+  is_default?: boolean;
+}
+
+/** @deprecated Use petition_combos. Kept optional for old caches. */
 export type PetitionVennKey =
   | 'op_only'
   | 'rf_only'
@@ -244,7 +254,10 @@ export interface AnalyticsSummary {
   signatures?: SignatureStats;
   by_signature?: CountBucket[];
   by_petition_count?: CountBucket[];
-  /** Exclusive 3-set Venn (Open Primaries × Reproductive Freedom × Medical Marijuana). */
+  petitions?: AnalyticsPetition[];
+  petition_combos?: PetitionComboCount[];
+  super_signers?: number;
+  /** @deprecated Replaced by petition_combos. */
   petition_venn?: PetitionVennCounts;
   /** Mean miles to nearest FormHandler yard sign (sample of matching voters with coords). */
   avg_nearby_yard_sign_miles?: number | null;

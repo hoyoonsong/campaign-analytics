@@ -8,6 +8,7 @@ const AuthBridge = lazy(() => import('./pages/AuthBridge'));
 const Analytics = lazy(() => import('./pages/Analytics'));
 const Search = lazy(() => import('./pages/Search'));
 const ImportPage = lazy(() => import('./pages/Import'));
+const Petitions = lazy(() => import('./pages/Petitions'));
 const Universes = lazy(() => import('./pages/Universes'));
 const YardSignSuggestions = lazy(() => import('./pages/YardSignSuggestions'));
 const Usage = lazy(() => import('./pages/Usage'));
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="/search" element={<Search />} />
           <Route path="/suggestions" element={<YardSignSuggestions />} />
           <Route path="/import" element={<ImportPage />} />
+          <Route path="/petitions" element={<Petitions />} />
           <Route path="/universes" element={<Universes />} />
           <Route path="/usage" element={<Usage />} />
           <Route path="/logs" element={<ActivityLogs />} />

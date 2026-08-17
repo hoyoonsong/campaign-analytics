@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Alert, PageHeader } from '../components/ui';
-import { ImportMappingModal } from '../components/ImportMappingModal';
+import { ImportMappingModal, slugFromPetitionTarget } from '../components/ImportMappingModal';
 import {
+  createPetitionApi,
   fetchCampaignSyncState,
   importVoters,
   syncCampaignIndexes,
 } from '../lib/api';
+import { usePetitions } from '../lib/petitions';
 import { finalizeImportBatch } from '../lib/importBatches';
 import { parseCsv, rowsToObjects } from '../lib/csv';
 import { collapseImportRows } from '../lib/dedupe';
@@ -41,6 +43,11 @@ export default function ImportPage() {
   const [syncState, setSyncState] = useState<CampaignSyncState | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const {
+    activePetitions: petitions,
+    reload: reloadPetitions,
+    addLocal: addPetitionLocal,
+  } = usePetitions();
 
   useEffect(() => {
     void fetchCampaignSyncState()
@@ -79,7 +86,7 @@ export default function ImportPage() {
     setPhase('mapping');
   };
 
-  const runImport = async (mapping: Record<VoterFieldKey, string>) => {
+  const runImport = async (mapping: Record<string, string>) => {
     setError(null);
     setPhase('importing');
 
@@ -270,6 +277,16 @@ export default function ImportPage() {
           title={`Map columns — ${filename}`}
           headers={headers}
           sampleRows={rawRows}
+          petitions={petitions}
+          onCreatePetition={async (label) => {
+            const { petition } = await createPetitionApi({ label });
+            if (!petition?.slug) {
+              throw new Error('Could not create petition');
+            }
+            addPetitionLocal(petition);
+            reloadPetitions();
+            return petition;
+          }}
           onCancel={() => {
             setPhase('idle');
             setHeaders([]);
@@ -337,8 +354,19 @@ export default function ImportPage() {
   );
 }
 
+const SIG_FIELD_TO_SLUG: Record<string, string> = {
+  sig_open_primaries: 'open_primaries',
+  sig_reproductive_freedom: 'reproductive_freedom',
+  sig_reproductive_freedom_valid_code: 'reproductive_freedom',
+  sig_achilles_petition: 'achilles',
+  sig_medical_cannabis: 'medical_cannabis',
+  sig_medical_marijuana_valid_code: 'medical_marijuana_valid',
+};
+
 function normalizeRow(row: Record<string, string>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  const signatures: Record<string, string> = {};
+
   for (const field of VOTER_FIELDS) {
     const key = field.key as VoterFieldKey;
     const raw = row[key];
@@ -357,6 +385,15 @@ function normalizeRow(row: Record<string, string>): Record<string, unknown> {
     } else {
       out[key] = raw;
     }
+    const slug = SIG_FIELD_TO_SLUG[key];
+    if (slug && raw) signatures[slug] = raw;
   }
+
+  for (const [key, raw] of Object.entries(row)) {
+    const slug = slugFromPetitionTarget(key);
+    if (slug && raw) signatures[slug] = raw;
+  }
+
+  if (Object.keys(signatures).length) out.signatures = signatures;
   return out;
 }

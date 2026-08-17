@@ -1,9 +1,20 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { VoterFieldKey } from '../lib/types';
 import { VOTER_FIELDS } from '../lib/types';
+import type { Petition } from '../lib/petitions';
 
 const PREVIEW_ROWS = 5;
+export const PETITION_TARGET_PREFIX = 'petition:';
+
+export function petitionTargetKey(slug: string) {
+  return `${PETITION_TARGET_PREFIX}${slug}`;
+}
+
+export function slugFromPetitionTarget(key: string): string | null {
+  return key.startsWith(PETITION_TARGET_PREFIX)
+    ? key.slice(PETITION_TARGET_PREFIX.length)
+    : null;
+}
 
 export interface ImportTarget {
   key: string;
@@ -41,7 +52,9 @@ function groupFor(key: string): string {
     return 'Location';
   }
   if (['party', 'voter_registered', 'status'].includes(key)) return 'Registration';
-  if (key.startsWith('sig_')) return 'Signatures';
+  if (key.startsWith('sig_') || key.startsWith(PETITION_TARGET_PREFIX)) {
+    return 'Signatures';
+  }
   if (
     ['volunteer_interest', 'yard_sign', 'support_score', 'newsletter', 'legacy_volunteer'].includes(
       key,
@@ -85,43 +98,159 @@ function aliasesFor(key: string, label: string): string[] {
   return [...base, ...(extra[key] ?? [])];
 }
 
+export function headerLeaf(header: string): string {
+  const trimmed = header.trim();
+  return trimmed.includes('>') ? trimmed.split('>').pop()!.trim() : trimmed;
+}
+
+function normalizeMatchKey(s: string): string {
+  return headerLeaf(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function corePetitionKey(s: string): string {
+  return normalizeMatchKey(s)
+    .replace(
+      /\b(petition|petitions|signature|signatures|sign|valid|code|act|idaho)\b/g,
+      ' ',
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function aliasesMatchHeader(header: string, aliases: string[]): boolean {
+  const h = normalizeMatchKey(header);
+  const hCore = corePetitionKey(header);
+  if (!h) return false;
+  return aliases.some((a) => {
+    const n = normalizeMatchKey(a);
+    const c = corePetitionKey(a);
+    if (!n) return false;
+    if (n === h || a.toLowerCase() === header.toLowerCase()) return true;
+    if (c && hCore && c === hCore && c.length >= 4) return true;
+    if (n.length >= 6 && (h.includes(n) || n.includes(h))) return true;
+    return false;
+  });
+}
+
+export function looksLikePetitionHeader(header: string): boolean {
+  const lower = header.toLowerCase();
+  const leaf = headerLeaf(lower);
+  if (/\b(petition|petitions|signature|signatures)\b/.test(leaf)) return true;
+  if (/>\s*signatures\s*>/.test(lower) || /signatures\s*>/.test(lower)) return true;
+  return false;
+}
+
+function petitionTargetFrom(p: Petition): ImportTarget {
+  return {
+    key: petitionTargetKey(p.slug),
+    label: p.label,
+    group: 'Signatures',
+    aliases: [
+      p.slug,
+      p.slug.replace(/_/g, ' '),
+      p.label.toLowerCase(),
+      p.short_label.toLowerCase(),
+    ],
+  };
+}
+
 export function ImportMappingModal({
   title = 'Map your columns',
   headers,
   sampleRows,
+  petitions = [],
+  onCreatePetition,
   onCancel,
   onConfirm,
 }: {
   title?: string;
   headers: string[];
   sampleRows: string[][];
+  petitions?: Petition[];
+  onCreatePetition?: (label: string) => Promise<Petition | null>;
   onCancel: () => void;
-  onConfirm: (mapping: Record<VoterFieldKey, string>) => void | Promise<void>;
+  onConfirm: (mapping: Record<string, string>) => void | Promise<void>;
 }) {
+  const [createdPetitions, setCreatedPetitions] = useState<Petition[]>([]);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const touched = useRef(new Set<string>());
+
+  const allPetitions = useMemo(() => {
+    const seen = new Set(petitions.map((p) => p.slug));
+    return [
+      ...petitions,
+      ...createdPetitions.filter((p) => !seen.has(p.slug)),
+    ];
+  }, [petitions, createdPetitions]);
+
+  const targets = useMemo(() => {
+    const base = VOTER_IMPORT_TARGETS.filter((t) => !t.key.startsWith('sig_'));
+    const sigs: ImportTarget[] = allPetitions.map(petitionTargetFrom);
+    // Keep legacy sig_* aliases so old CSV headers still auto-guess.
+    for (const f of VOTER_FIELDS.filter((x) => x.key.startsWith('sig_'))) {
+      const slug =
+        f.key === 'sig_open_primaries'
+          ? 'open_primaries'
+          : f.key === 'sig_reproductive_freedom' ||
+              f.key === 'sig_reproductive_freedom_valid_code'
+            ? 'reproductive_freedom'
+            : f.key === 'sig_achilles_petition'
+              ? 'achilles'
+              : f.key === 'sig_medical_cannabis'
+                ? 'medical_cannabis'
+                : f.key === 'sig_medical_marijuana_valid_code'
+                  ? 'medical_marijuana_valid'
+                  : null;
+      if (!slug) continue;
+      const t = sigs.find((s) => s.key === petitionTargetKey(slug));
+      if (t) t.aliases.push(...aliasesFor(f.key, f.label));
+    }
+    return [...base, ...sigs];
+  }, [allPetitions]);
+
   const guess = useMemo(() => {
     const m: Record<string, string> = {};
     const used = new Set<string>();
     for (const h of headers) {
-      const label = h.toLowerCase();
-      const leaf = label.includes('>') ? label.split('>').pop()!.trim() : label;
-      const hit = VOTER_IMPORT_TARGETS.find((t) => {
+      const hit = targets.find((t) => {
         if (used.has(t.key)) return false;
-        return t.aliases.some(
-          (a) =>
-            a === leaf ||
-            a === label ||
-            (a.length >= 6 && (leaf.includes(a) || label.includes(a))),
-        );
+        return aliasesMatchHeader(h, t.aliases);
       });
       m[h] = hit?.key ?? '';
       if (hit) used.add(hit.key);
     }
     return m;
-  }, [headers]);
+  }, [headers, targets]);
 
-  // csv header → target key
   const [colMap, setColMap] = useState<Record<string, string>>(guess);
   const [saving, setSaving] = useState(false);
+
+  // Fill still-untouched columns when petitions load or a new one is created.
+  // Do not overwrite a column the user already set (including explicit Ignore).
+  useEffect(() => {
+    setColMap((prev) => {
+      const used = new Set(
+        Object.values(prev).filter((v) => v && v !== '__new_petition__'),
+      );
+      let changed = false;
+      const next = { ...prev };
+      for (const h of headers) {
+        if (touched.current.has(h)) continue;
+        if (next[h]) continue;
+        const guessed = guess[h];
+        if (guessed && !used.has(guessed)) {
+          next[h] = guessed;
+          used.add(guessed);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [guess, headers]);
 
   const assigned = new Set(Object.values(colMap).filter(Boolean));
   // Prefer Murmuration ID for 1:1 mapping; State Voter ID is an acceptable fallback.
@@ -136,14 +265,85 @@ export function ImportMappingModal({
       : []),
   ];
 
-  const toTargetMapping = (): Record<VoterFieldKey, string> => {
-    const out = {} as Record<VoterFieldKey, string>;
+  const unmappedPetitionHeaders = headers.filter(
+    (h) => !colMap[h] && looksLikePetitionHeader(h),
+  );
+
+  const toTargetMapping = (): Record<string, string> => {
+    const out: Record<string, string> = {};
     for (const [header, target] of Object.entries(colMap)) {
-      if (!target) continue;
-      out[target as VoterFieldKey] = header;
+      if (!target || target === '__new_petition__') continue;
+      out[target] = header;
     }
     return out;
   };
+
+  const applyCreated = (header: string, created: Petition) => {
+    setCreatedPetitions((cur) =>
+      cur.some((p) => p.slug === created.slug) ? cur : [...cur, created],
+    );
+    touched.current.add(header);
+    setColMap((m) => ({ ...m, [header]: petitionTargetKey(created.slug) }));
+  };
+
+  const createForHeader = async (header: string, suggested: string) => {
+    if (!onCreatePetition) return;
+    const label = window.prompt('New petition name', suggested);
+    if (!label?.trim()) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const created = await onCreatePetition(label.trim());
+      if (!created?.slug) {
+        setCreateError('Could not create petition.');
+        return;
+      }
+      applyCreated(header, created);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Could not create petition');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const addUnmappedPetitions = async () => {
+    if (!onCreatePetition || unmappedPetitionHeaders.length === 0) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      for (const h of unmappedPetitionHeaders) {
+        const created = await onCreatePetition(headerLeaf(h));
+        if (!created?.slug) {
+          setCreateError(`Could not create petition from “${headerLeaf(h)}”.`);
+          break;
+        }
+        applyCreated(h, created);
+      }
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Could not create petition');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleSelect = async (header: string, value: string) => {
+    if (value === '__new_petition__' && onCreatePetition) {
+      await createForHeader(header, headerLeaf(header));
+      return;
+    }
+    touched.current.add(header);
+    setColMap((m) => ({ ...m, [header]: value }));
+  };
+
+  const groupedTargets = useMemo(() => {
+    const acc: Record<string, ImportTarget[]> = {};
+    for (const t of targets) {
+      const g = t.group ?? 'Other';
+      (acc[g] ??= []).push(t);
+    }
+    if (onCreatePetition && !acc.Signatures) acc.Signatures = [];
+    return acc;
+  }, [targets, onCreatePetition]);
 
   const body = (
     <div className="fixed inset-0 z-[5000] flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:p-8">
@@ -152,11 +352,37 @@ export function ImportMappingModal({
           <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
           <p className="mt-1 text-sm text-slate-500">
             Assign each spreadsheet column to a voter field (or ignore). Same flow as
-            the campaign portal.
+            the campaign portal. Signature columns can be mapped to a petition or added
+            as a new one — they should not stay on Ignore.
           </p>
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3 sm:px-5 space-y-3">
+          {createError ? (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {createError}
+            </p>
+          ) : null}
+
+          {onCreatePetition && unmappedPetitionHeaders.length > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <p>
+                {unmappedPetitionHeaders.length === 1
+                  ? '1 signature column is set to Ignore.'
+                  : `${unmappedPetitionHeaders.length} signature columns are set to Ignore.`}{' '}
+                Add them as petitions so they import.
+              </p>
+              <button
+                type="button"
+                className="btn-secondary shrink-0 text-xs"
+                disabled={creating}
+                onClick={() => void addUnmappedPetitions()}
+              >
+                {creating ? 'Adding…' : 'Add as petitions'}
+              </button>
+            </div>
+          ) : null}
+
           {headers.map((h) => (
             <div
               key={h}
@@ -169,33 +395,45 @@ export function ImportMappingModal({
                 <p className="truncate text-xs text-slate-400">
                   e.g. {sampleRows[0]?.[headers.indexOf(h)] || '—'}
                 </p>
+                {!colMap[h] && onCreatePetition && looksLikePetitionHeader(h) ? (
+                  <button
+                    type="button"
+                    className="mt-0.5 text-xs font-medium text-brand-700 hover:underline"
+                    disabled={creating}
+                    onClick={() => void createForHeader(h, headerLeaf(h))}
+                  >
+                    Add as petition
+                  </button>
+                ) : null}
               </div>
               <select
                 className="input"
-                value={colMap[h] ?? ''}
-                onChange={(e) =>
-                  setColMap((m) => ({ ...m, [h]: e.target.value }))
+                value={
+                  colMap[h] && colMap[h] !== '__new_petition__'
+                    ? colMap[h]
+                    : ''
                 }
+                disabled={creating}
+                onChange={(e) => void handleSelect(h, e.target.value)}
               >
                 <option value="">— Ignore —</option>
-                {Object.entries(
-                  VOTER_IMPORT_TARGETS.reduce<Record<string, ImportTarget[]>>(
-                    (acc, t) => {
-                      const g = t.group ?? 'Other';
-                      (acc[g] ??= []).push(t);
-                      return acc;
-                    },
-                    {},
-                  ),
-                ).map(([group, targets]) => (
+                {colMap[h] &&
+                colMap[h] !== '__new_petition__' &&
+                !targets.some((t) => t.key === colMap[h]) ? (
+                  <option value={colMap[h]}>
+                    {slugFromPetitionTarget(colMap[h]) || colMap[h]}
+                  </option>
+                ) : null}
+                {Object.entries(groupedTargets).map(([group, groupTargets]) => (
                   <optgroup key={group} label={group}>
-                    {targets.map((t) => (
+                    {group === 'Signatures' && onCreatePetition ? (
+                      <option value="__new_petition__">New petition…</option>
+                    ) : null}
+                    {groupTargets.map((t) => (
                       <option
                         key={t.key}
                         value={t.key}
-                        disabled={
-                          assigned.has(t.key) && colMap[h] !== t.key
-                        }
+                        disabled={assigned.has(t.key) && colMap[h] !== t.key}
                       >
                         {t.label}
                         {t.required ? ' *' : ''}
@@ -247,7 +485,7 @@ export function ImportMappingModal({
           <button
             type="button"
             className="btn-primary"
-            disabled={saving || missingRequired.length > 0}
+            disabled={saving || creating || missingRequired.length > 0}
             onClick={() => {
               setSaving(true);
               void Promise.resolve(onConfirm(toTargetMapping())).finally(() =>

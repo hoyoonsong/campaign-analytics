@@ -14,6 +14,7 @@ const items: NavItem[] = [
   { to: '/search', label: 'Search' },
   { to: '/suggestions', label: 'Suggestions' },
   { to: '/import', label: 'Import' },
+  { to: '/petitions', label: 'Petitions' },
   { to: '/universes', label: 'Universes' },
   { to: '/usage', label: 'Usage' },
   { to: '/logs', label: 'Logs' },

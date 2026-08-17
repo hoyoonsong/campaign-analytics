@@ -30,13 +30,14 @@ import {
   persistSearchFilters,
 } from "../lib/navigateToSearch";
 import {
-  PETITION_COMBOS,
+  buildPetitionUnits,
   comboExportFilename,
-  mergeFiltersWithSegment,
-  type PetitionVennCounts,
-  type PetitionVennKey,
-} from "../lib/petitionCombos";
-import type { VoterFilters, VoterRow } from "../lib/types";
+  filtersForSignedAny,
+  mergeFiltersWithCombo,
+  usePetitions,
+  useSelectedPetitions,
+} from "../lib/petitions";
+import type { PetitionComboCount, VoterFilters, VoterRow } from "../lib/types";
 
 const PAGE_SIZE = 50;
 
@@ -64,13 +65,13 @@ export default function Search() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [exportingKey, setExportingKey] = useState<PetitionVennKey | null>(
+  const [exportingKey, setExportingKey] = useState<string | number | null>(
     null,
   );
   const [exportingAll, setExportingAll] = useState(false);
-  const [petitionVenn, setPetitionVenn] = useState<PetitionVennCounts | null>(
-    null,
-  );
+  const [petitionCombos, setPetitionCombos] = useState<
+    PetitionComboCount[] | null
+  >(null);
   const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [profileId, setProfileId] = useState<number | null>(null);
@@ -79,6 +80,18 @@ export default function Search() {
     kind: NearbyKind;
   } | null>(null);
   const [options, setOptions] = useState<FilterOptions>(EMPTY_FILTER_OPTIONS);
+  const { activePetitions: allPetitions, groups: petitionGroups } =
+    usePetitions();
+  const {
+    slugs: selectedSlugs,
+    selected: selectedPetitions,
+    isDefaultSelection,
+  } = useSelectedPetitions(allPetitions);
+
+  const petitionUnits = useMemo(
+    () => buildPetitionUnits(selectedPetitions, petitionGroups),
+    [selectedPetitions, petitionGroups],
+  );
 
   const activeFilterChips = useMemo(() => summarizeFilters(filters), [filters]);
 
@@ -121,23 +134,26 @@ export default function Search() {
     };
   }, [filters, q, page]);
 
-  // Petition Venn counts for the current filter universe (sidebar filters).
+  // Petition combo counts for the current filter universe.
   useEffect(() => {
     let active = true;
     const t = setTimeout(() => {
-      void fetchAnalytics(filters)
+      void fetchAnalytics(
+        filters,
+        isDefaultSelection ? undefined : selectedSlugs,
+      )
         .then((data) => {
-          if (active) setPetitionVenn(data.petition_venn ?? null);
+          if (active) setPetitionCombos(data.petition_combos ?? null);
         })
         .catch(() => {
-          if (active) setPetitionVenn(null);
+          if (active) setPetitionCombos(null);
         });
     }, 300);
     return () => {
       active = false;
       clearTimeout(t);
     };
-  }, [filters]);
+  }, [filters, isDefaultSelection, selectedSlugs]);
 
   // Drop selection when the result universe changes (not on pagination).
   useEffect(() => {
@@ -192,19 +208,45 @@ export default function Search() {
     }
   };
 
-  const exportSegment = async (key: PetitionVennKey) => {
+  const exportSignedAny = async (
+    slugs: string[],
+    filename: string,
+    key: string,
+  ) => {
     setExportingKey(key);
     setError(null);
     try {
-      const merged = mergeFiltersWithSegment(filters, key);
+      const { signed: _s, signed_min: _m, signed_min_of: _o, ...rest } =
+        filters;
       const count = await downloadVotersCsv({
-        filters: merged,
-        filename: comboExportFilename(key),
+        filters: { ...rest, ...filtersForSignedAny(slugs) },
+        filename,
       });
       void logActivity({
         action: "export",
         entityType: "voter",
-        metadata: { label: `Petition combo CSV (${key})`, count },
+        metadata: { label: filename, count },
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExportingKey(null);
+    }
+  };
+
+  const exportSegment = async (mask: number) => {
+    setExportingKey(mask);
+    setError(null);
+    try {
+      const merged = mergeFiltersWithCombo(filters, mask, selectedPetitions);
+      const count = await downloadVotersCsv({
+        filters: merged,
+        filename: comboExportFilename(mask, selectedPetitions),
+      });
+      void logActivity({
+        action: "export",
+        entityType: "voter",
+        metadata: { label: `Petition combo CSV (${mask})`, count },
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Export failed");
@@ -218,12 +260,19 @@ export default function Search() {
     setError(null);
     try {
       let totalExported = 0;
-      for (const combo of PETITION_COMBOS) {
-        setExportingKey(combo.key);
-        const merged = mergeFiltersWithSegment(filters, combo.key);
+      const rowsToExport = [...(petitionCombos ?? [])]
+        .map((c) => ({ mask: Number(c.mask), count: Number(c.count) || 0 }))
+        .filter((c) => c.count > 0 && c.mask !== 0);
+      for (const combo of rowsToExport) {
+        setExportingKey(combo.mask);
+        const merged = mergeFiltersWithCombo(
+          filters,
+          combo.mask,
+          selectedPetitions,
+        );
         const count = await downloadVotersCsv({
           filters: merged,
-          filename: comboExportFilename(combo.key),
+          filename: comboExportFilename(combo.mask, selectedPetitions),
         });
         totalExported += count;
         await sleep(400);
@@ -232,7 +281,7 @@ export default function Search() {
         action: "export",
         entityType: "voter",
         metadata: {
-          label: "Petition combo CSV (all 7)",
+          label: `Petition combo CSV (all ${rowsToExport.length})`,
           count: totalExported,
         },
       });
@@ -310,6 +359,14 @@ export default function Search() {
             >
               {exporting ? "Exporting…" : "Export CSV"}
             </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={!petitionCombos?.length}
+              onClick={() => setExportOpen(true)}
+            >
+              Petition combos
+            </button>
           </div>
         }
       />
@@ -354,10 +411,26 @@ export default function Search() {
       <PetitionExportModal
         open={exportOpen}
         onClose={() => setExportOpen(false)}
-        counts={petitionVenn}
+        units={petitionUnits}
+        petitions={selectedPetitions}
+        combos={petitionCombos}
         exportingKey={exportingKey}
         exportingAll={exportingAll}
-        onExportSegment={(key) => void exportSegment(key)}
+        onExportUnit={(unit) =>
+          void exportSignedAny(
+            unit.petitions.map((p) => p.slug),
+            `petition-${unit.short_label.replace(/\s+/g, "-")}-${new Date().toISOString().slice(0, 10)}.csv`,
+            unit.key,
+          )
+        }
+        onExportPetition={(p) =>
+          void exportSignedAny(
+            [p.slug],
+            `petition-${p.slug}-${new Date().toISOString().slice(0, 10)}.csv`,
+            `p:${p.slug}`,
+          )
+        }
+        onExportSegment={(mask) => void exportSegment(mask)}
         onExportAll={() => void exportAllCombos()}
       />
 

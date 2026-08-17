@@ -6,7 +6,7 @@ import type {
   SignedPetitionKey,
   VoterFilters,
 } from "../lib/types";
-import { SIGNED_PETITION_OPTIONS } from "../lib/types";
+import { petitionLabel, usePetitions } from "../lib/petitions";
 import {
   addAnyOfRule,
   clearExclude,
@@ -126,10 +126,13 @@ type AttrGroup = {
 };
 
 /** Same dimensions as the include filters above — stacked after include. */
-function buildExcludeCatalog(opts: FilterOptions): AttrGroup[] {
-  const signedValues = SIGNED_PETITION_OPTIONS.map((o) => o.key);
+function buildExcludeCatalog(
+  opts: FilterOptions,
+  petitions: { slug: string; label: string }[],
+): AttrGroup[] {
+  const signedValues = petitions.map((o) => o.slug);
   const signedLabels = Object.fromEntries(
-    SIGNED_PETITION_OPTIONS.map((o) => [o.key, o.label]),
+    petitions.map((o) => [o.slug, o.label]),
   );
 
   return [
@@ -426,6 +429,7 @@ export function VoterFiltersPanel({
   asDrawer = false,
   open = true,
   onClose,
+  showPossibleDuplicates = true,
 }: {
   filters: VoterFilters;
   onChange: (next: VoterFilters) => void;
@@ -434,8 +438,10 @@ export function VoterFiltersPanel({
   asDrawer?: boolean;
   open?: boolean;
   onClose?: () => void;
+  showPossibleDuplicates?: boolean;
 }) {
   const opts = mergeOptions(options);
+  const { activePetitions: petitions } = usePetitions();
   const [draftField, setDraftField] = useState<FilterAnyOfField | "">(
     "",
   );
@@ -507,7 +513,8 @@ export function VoterFiltersPanel({
       | "signed_all_core"
       | "has_volunteer"
       | "has_yard_sign"
-      | "has_donated",
+      | "has_donated"
+      | "possible_duplicates",
     on: boolean,
   ) => {
     onChange({ ...filters, [key]: on ? true : null });
@@ -599,6 +606,42 @@ export function VoterFiltersPanel({
       </div>
 
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
+        {showPossibleDuplicates &&
+        matchSection(
+          "duplicate",
+          "duplicates",
+          "dedupe",
+          "possible",
+          "data quality",
+        ) ? (
+          <FilterSection
+            title="Data quality"
+            hint="Find rows that look like the same person."
+            defaultOpen
+            forceOpen={Boolean(q)}
+            badge={filters.possible_duplicates ? "on" : null}
+          >
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={filters.possible_duplicates === true}
+                onChange={(e) =>
+                  setFlag("possible_duplicates", e.target.checked)
+                }
+                className="mt-0.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+              />
+              <span>
+                <span className="block font-medium text-slate-800">
+                  Possible duplicates
+                </span>
+                <span className="block text-[11px] text-slate-500">
+                  Same email, phone, voter ID, or name + street as another row.
+                </span>
+              </span>
+            </label>
+          </FilterSection>
+        ) : null}
+
         {matchSection("tags", "supporter", "maybe", "opposed") ? (
           <FilterSection
             title="Tags"
@@ -717,15 +760,15 @@ export function VoterFiltersPanel({
             badge={filters.signed?.length ? String(filters.signed.length) : null}
           >
             <div className="space-y-1">
-              {SIGNED_PETITION_OPTIONS.map((opt) => (
+              {petitions.map((opt) => (
                 <label
-                  key={opt.key}
+                  key={opt.slug}
                   className="flex cursor-pointer items-center gap-2 text-sm"
                 >
                   <input
                     type="checkbox"
-                    checked={(filters.signed ?? []).includes(opt.key)}
-                    onChange={() => toggleSigned(opt.key)}
+                    checked={(filters.signed ?? []).includes(opt.slug)}
+                    onChange={() => toggleSigned(opt.slug)}
                     className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
                   />
                   <span className="truncate">{opt.label}</span>
@@ -1123,6 +1166,7 @@ export function VoterFiltersPanel({
           <ExcludeProfilesSection
             filters={filters}
             options={opts}
+            petitions={petitions}
             onChange={onChange}
           />
         ) : null}
@@ -1251,13 +1295,18 @@ function summarizeExcludeRule(
 function ExcludeProfilesSection({
   filters,
   options,
+  petitions,
   onChange,
 }: {
   filters: VoterFilters;
   options: FilterOptions;
+  petitions: { slug: string; label: string }[];
   onChange: (next: VoterFilters) => void;
 }) {
-  const catalog = useMemo(() => buildExcludeCatalog(options), [options]);
+  const catalog = useMemo(
+    () => buildExcludeCatalog(options, petitions),
+    [options, petitions],
+  );
   const allAttrs = useMemo(() => flattenAttrs(catalog), [catalog]);
   const attrByKey = useMemo(
     () =>
@@ -1348,9 +1397,9 @@ function ExcludeProfilesSection({
           Exclude Profiles
         </h3>
         <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
-          Applied after include filters. Example: check three petitions above,
-          then exclude Achilles here — keeps people who signed those three
-          without Achilles.
+          Applied after include filters. Example: check petitions above,
+          then exclude one here — keeps people who signed the included
+          set without the excluded petition.
         </p>
       </div>
 
@@ -1360,7 +1409,7 @@ function ExcludeProfilesSection({
           {signedOverlap
             .map(
               (k) =>
-                SIGNED_PETITION_OPTIONS.find((o) => o.key === k)?.label ?? k,
+                petitionLabel(k),
             )
             .join(", ")}
           ). That combination matches nobody for that petition.

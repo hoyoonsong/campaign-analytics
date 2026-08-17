@@ -118,5 +118,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     };
   }
 
+  try {
+    const { data: sigRows } = await ctx.voter
+      .from('voter_petition_signatures')
+      .select('raw_value, signed, petitions(slug, label, sort_order)')
+      .eq('voter_id', id)
+      .eq('signed', true);
+    if (Array.isArray(sigRows)) {
+      voter.petition_signatures = sigRows
+        .map((row) => {
+          const p = (row as { petitions?: { slug?: string; label?: string; sort_order?: number } | { slug?: string; label?: string; sort_order?: number }[] }).petitions;
+          const pet = Array.isArray(p) ? p[0] : p;
+          return {
+            slug: pet?.slug ?? '',
+            label: pet?.label ?? pet?.slug ?? 'Petition',
+            sort_order: pet?.sort_order ?? 0,
+            raw_value: (row as { raw_value?: string | null }).raw_value ?? null,
+          };
+        })
+        .filter((s) => s.slug)
+        .sort((a, b) => a.sort_order - b.sort_order);
+    }
+  } catch {
+    /* registry may not be applied yet */
+  }
+
   return json(res, 200, { voter, campaign, nearby });
 }

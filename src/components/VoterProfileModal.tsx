@@ -39,6 +39,11 @@ export type VoterProfile = Record<string, unknown> & {
   campaign_person_id?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  petition_signatures?: Array<{
+    slug: string;
+    label: string;
+    raw_value?: string | null;
+  }>;
 };
 
 function present(v: unknown): boolean {
@@ -167,16 +172,25 @@ export function VoterProfileModal({
     if (!voter) return [] as { title: string; detail: string }[];
     const items: { title: string; detail: string }[] = [];
 
-    const sigs: [string, unknown][] = [
-      ['Open Primaries petition', voter.sig_open_primaries],
-      ['Reproductive Freedom signature', voter.sig_reproductive_freedom],
-      ['Achilles petition', voter.sig_achilles_petition],
-      ['Medical Cannabis Act', voter.sig_medical_cannabis],
-      ['Medical Marijuana valid code', voter.sig_medical_marijuana_valid_code],
-      ['Reproductive Freedom valid code', voter.sig_reproductive_freedom_valid_code],
-    ];
-    for (const [title, val] of sigs) {
-      if (present(val)) items.push({ title, detail: String(val) });
+    if (voter.petition_signatures?.length) {
+      for (const sig of voter.petition_signatures) {
+        items.push({
+          title: sig.label,
+          detail: sig.raw_value ? String(sig.raw_value) : 'Signed',
+        });
+      }
+    } else {
+      const sigs: [string, unknown][] = [
+        ['Open Primaries petition', voter.sig_open_primaries],
+        ['Reproductive Freedom signature', voter.sig_reproductive_freedom],
+        ['Achilles petition', voter.sig_achilles_petition],
+        ['Medical Cannabis Act', voter.sig_medical_cannabis],
+        ['Medical Marijuana valid code', voter.sig_medical_marijuana_valid_code],
+        ['Reproductive Freedom valid code', voter.sig_reproductive_freedom_valid_code],
+      ];
+      for (const [title, val] of sigs) {
+        if (present(val)) items.push({ title, detail: String(val) });
+      }
     }
 
     if (present(voter.volunteer_interest)) {

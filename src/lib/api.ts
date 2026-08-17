@@ -40,7 +40,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     // Duplicate-key / constraint errors are app bugs, not a dead API.
     if (
       res.status >= 500 &&
-      !/duplicate key|unique constraint|statement timeout|canceling statement/i.test(
+      !/duplicate key|unique constraint|statement timeout|canceling statement|permission denied/i.test(
         detail,
       )
     ) {
@@ -51,16 +51,22 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export async function fetchAnalytics(filters: VoterFilters) {
+export async function fetchAnalytics(
+  filters: VoterFilters,
+  _chartPetitions?: string[] | null,
+) {
+  // Petition picker is sliced client-side from the full-universe summary.
+  // Sending slugs used to bust the cache and flash the 3-default snapshot.
   const payload = toFilterPayload(filters);
   const empty = Object.keys(payload).length === 0;
-  const cacheKey = 'analytics_summary_empty_v3';
+  const cacheKey = 'analytics_summary_empty_v5';
 
   if (empty && typeof sessionStorage !== 'undefined') {
     try {
-      // Drop older client caches that predate petition_venn.
       sessionStorage.removeItem('analytics_summary_empty_v1');
       sessionStorage.removeItem('analytics_summary_empty_v2');
+      sessionStorage.removeItem('analytics_summary_empty_v3');
+      sessionStorage.removeItem('analytics_summary_empty_v4');
       const raw = sessionStorage.getItem(cacheKey);
       if (raw) {
         const parsed = JSON.parse(raw) as {
@@ -68,11 +74,12 @@ export async function fetchAnalytics(filters: VoterFilters) {
           data: AnalyticsSummary;
         };
         // 10 minutes — server cache is source of truth; this just skips a round trip.
-        // Require petition_venn so a pre-migration snapshot can't stick around as all zeros.
+        const rows = parsed.data?.by_signature?.length ?? 0;
+        const pets = parsed.data?.petitions?.length ?? 0;
         if (
           Date.now() - parsed.at < 10 * 60 * 1000 &&
-          parsed.data?.petition_venn &&
-          typeof parsed.data.petition_venn.op_only === 'number'
+          Array.isArray(parsed.data?.petition_combos) &&
+          (rows >= 4 || pets >= 4)
         ) {
           return parsed.data;
         }
@@ -87,7 +94,10 @@ export async function fetchAnalytics(filters: VoterFilters) {
     body: JSON.stringify({ filters: payload }),
   });
 
-  if (empty && typeof sessionStorage !== 'undefined') {
+  const complete =
+    (data.by_signature?.length ?? 0) >= 4 ||
+    (data.petitions?.length ?? 0) >= 4;
+  if (empty && complete && typeof sessionStorage !== 'undefined') {
     try {
       sessionStorage.setItem(
         cacheKey,
@@ -102,7 +112,7 @@ export async function fetchAnalytics(filters: VoterFilters) {
 }
 
 
-export function fetchMapPoints(filters: VoterFilters, limit = 5000) {
+export function fetchMapPoints(filters: VoterFilters, limit = 2500) {
   return apiFetch<{
     points: MapPoint[];
     returned: number;
@@ -362,6 +372,8 @@ export function clearClientDataCaches() {
     sessionStorage.removeItem('analytics_summary_empty_v1');
     sessionStorage.removeItem('analytics_summary_empty_v2');
     sessionStorage.removeItem('analytics_summary_empty_v3');
+    sessionStorage.removeItem('analytics_summary_empty_v4');
+    sessionStorage.removeItem('analytics_summary_empty_v5');
     sessionStorage.removeItem('voter_filter_options_v1');
     sessionStorage.removeItem('voter_filter_options_v2');
     sessionStorage.removeItem('voter_filter_options_v3');
@@ -440,6 +452,137 @@ export async function fetchFilterOptions() {
   }
 
   return data;
+}
+
+export async function fetchPetitionsApi() {
+  const data = await apiFetch<{
+    petitions: Array<{
+      id: number;
+      slug: string;
+      label: string;
+      short_label: string;
+      bit_index: number;
+      sort_order: number;
+      is_default: boolean;
+      is_active: boolean;
+      group_id?: number | null;
+    }>;
+    groups?: Array<{
+      id: number;
+      slug: string;
+      label: string;
+      short_label: string;
+      sort_order: number;
+    }>;
+  }>('/api/voter/petitions');
+  return {
+    petitions: data.petitions ?? [],
+    groups: data.groups ?? [],
+  };
+}
+
+export async function createPetitionApi(body: {
+  label: string;
+  slug?: string;
+  short_label?: string;
+  is_default?: boolean;
+}) {
+  return apiFetch<{
+    petition: {
+      id: number;
+      slug: string;
+      label: string;
+      short_label: string;
+      bit_index: number;
+      sort_order: number;
+      is_default: boolean;
+      is_active: boolean;
+      group_id?: number | null;
+    };
+  }>('/api/voter/petitions', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function createPetitionGroupApi(body: {
+  label: string;
+  short_label?: string;
+  petition_ids: number[];
+}) {
+  return apiFetch<{
+    group: {
+      id: number;
+      slug: string;
+      label: string;
+      short_label: string;
+      sort_order: number;
+    };
+  }>('/api/voter/petitions', {
+    method: 'POST',
+    body: JSON.stringify({ kind: 'group', ...body }),
+  });
+}
+
+export async function updatePetitionApi(body: {
+  id: number;
+  label?: string;
+  short_label?: string;
+  sort_order?: number;
+  is_default?: boolean;
+  is_active?: boolean;
+  group_id?: number | null;
+}) {
+  return apiFetch<{
+    petition: {
+      id: number;
+      slug: string;
+      label: string;
+      short_label: string;
+      bit_index: number;
+      sort_order: number;
+      is_default: boolean;
+      is_active: boolean;
+      group_id?: number | null;
+    };
+  }>('/api/voter/petitions', {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updatePetitionGroupApi(body: {
+  id: number;
+  label?: string;
+  short_label?: string;
+  sort_order?: number;
+}) {
+  return apiFetch<{
+    group: {
+      id: number;
+      slug: string;
+      label: string;
+      short_label: string;
+      sort_order: number;
+    };
+  }>('/api/voter/petitions', {
+    method: 'PATCH',
+    body: JSON.stringify({ kind: 'group', ...body }),
+  });
+}
+
+export async function deletePetitionApi(id: number) {
+  return apiFetch<{ ok: boolean }>('/api/voter/petitions', {
+    method: 'DELETE',
+    body: JSON.stringify({ id }),
+  });
+}
+
+export async function deletePetitionGroupApi(id: number) {
+  return apiFetch<{ ok: boolean }>('/api/voter/petitions', {
+    method: 'DELETE',
+    body: JSON.stringify({ kind: 'group', id }),
+  });
 }
 
 type FilterOptionsCache = {

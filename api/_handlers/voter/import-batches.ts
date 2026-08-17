@@ -58,15 +58,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     });
 
-    // Stale unfiltered Analytics cache after data changes.
+    // Petition imports don't change county/city lists; keep filter-options
+    // cache so Analytics doesn't stampede 12 distinct scans after upload.
     if (status !== 'failed') {
       await ctx.voter
         .from('campaign_sync_state')
         .update({
           analytics_summary_cache: null,
           analytics_summary_cached_at: null,
-          filter_options_cache: null,
-          filter_options_cached_at: null,
           updated_at: new Date().toISOString(),
         })
         .eq('id', 1);

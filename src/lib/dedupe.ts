@@ -47,6 +47,9 @@ export class DedupeIndex {
     if (mid && this.byMurmurationId.has(mid)) return this.byMurmurationId.get(mid)!;
     const vid = (r.voter_id ?? '').trim();
     if (vid && this.byVoterId.has(vid)) return this.byVoterId.get(vid)!;
+    // A row that already has a unique person ID is a different person, even if
+    // they share a household phone/email. Weaker keys are only for ID-less rows.
+    if (mid || vid) return null;
     const email = normEmail(r.email);
     if (email && this.byEmail.has(email)) return this.byEmail.get(email)!;
     const phone = normPhone(r.phone);
@@ -113,10 +116,24 @@ export function mergeImportRows(
     'sig_medical_cannabis',
     'sig_medical_marijuana_valid_code',
     'sig_reproductive_freedom_valid_code',
+    'signatures',
   ]);
 
   for (const [k, v] of Object.entries(incoming)) {
     if (isEmpty(v)) continue;
+    if (
+      k === 'signatures' &&
+      v &&
+      typeof v === 'object' &&
+      out.signatures &&
+      typeof out.signatures === 'object'
+    ) {
+      out.signatures = {
+        ...(out.signatures as Record<string, unknown>),
+        ...(v as Record<string, unknown>),
+      };
+      continue;
+    }
     if (isEmpty(out[k]) || overwrite.has(k)) out[k] = v;
   }
   return out;

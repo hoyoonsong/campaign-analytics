@@ -205,18 +205,29 @@ function parseTagUniverses(
 export async function loadLeanGeo(
   voter: SupabaseClient,
 ): Promise<GeoPoint[]> {
-  const { data, error } = await voter
-    .from('campaign_geo_points')
-    .select('kind, lat, lng');
-  if (error || !data?.length) return [];
+  const pageSize = 1000;
   const points: GeoPoint[] = [];
-  for (const row of data) {
-    const kind = row.kind === 'yard_sign' ? 'yard_sign' : 'volunteer';
-    const lat = Number(row.lat);
-    const lng = Number(row.lng);
-    if (Number.isFinite(lat) && Number.isFinite(lng)) {
-      points.push({ kind, lat, lng });
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await voter
+      .from('campaign_geo_points')
+      .select('kind, lat, lng')
+      .in('kind', ['volunteer', 'yard_sign'])
+      .range(from, from + pageSize - 1);
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[enrich] loadLeanGeo failed', error.message);
+      break;
     }
+    const batch = data ?? [];
+    for (const row of batch) {
+      const kind = row.kind === 'yard_sign' ? 'yard_sign' : 'volunteer';
+      const lat = Number(row.lat);
+      const lng = Number(row.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        points.push({ kind, lat, lng });
+      }
+    }
+    if (batch.length < pageSize) break;
   }
   return points;
 }
@@ -403,21 +414,20 @@ export async function enrichSearchRows(
           ? Number(attrs.lng)
           : null);
 
-    // Always compute from lean pins (SQL display radius may be capped).
-    const nearby_yard_sign_miles = nearestMiles(
-      lat,
-      lng,
-      geoPoints,
-      'yard_sign',
-      null,
-    );
-    const nearby_volunteer_miles = nearestMiles(
-      lat,
-      lng,
-      geoPoints,
-      'volunteer',
-      null,
-    );
+    // Prefer unbounded JS distances; keep SQL values if a kind is missing
+    // from a truncated pin page.
+    const sqlYard =
+      typeof row.nearby_yard_sign_miles === 'number'
+        ? Number(row.nearby_yard_sign_miles)
+        : null;
+    const sqlVol =
+      typeof row.nearby_volunteer_miles === 'number'
+        ? Number(row.nearby_volunteer_miles)
+        : null;
+    const nearby_yard_sign_miles =
+      nearestMiles(lat, lng, geoPoints, 'yard_sign', null) ?? sqlYard;
+    const nearby_volunteer_miles =
+      nearestMiles(lat, lng, geoPoints, 'volunteer', null) ?? sqlVol;
 
     return {
       ...row,

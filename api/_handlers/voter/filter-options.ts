@@ -107,13 +107,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (error) return json(res, 500, { error: error.message });
 
   const d = { ...((data ?? {}) as Record<string, unknown>) };
-  try {
-    d.cities = await fetchIdahoCities(ctx.voter);
-  } catch (err) {
-    console.warn(
-      '[filter-options] idaho cities fallback failed',
-      err instanceof Error ? err.message : err,
-    );
+  const rpcCities = Array.isArray(d.cities) ? d.cities : [];
+  if (rpcCities.length < 50) {
+    try {
+      d.cities = await fetchIdahoCities(ctx.voter);
+    } catch (err) {
+      console.warn(
+        '[filter-options] idaho cities fallback failed',
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   await ctx.voter
