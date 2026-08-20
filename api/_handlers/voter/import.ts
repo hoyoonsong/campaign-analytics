@@ -42,6 +42,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     batchId = batch.id as string;
   }
 
+  // Stamp murmuration_id onto ID-less PII matches so the upsert updates
+  // the existing row instead of inserting a duplicate.
+  const { error: attachErr } = await ctx.voter.rpc('voter_attach_ids_by_pii', {
+    p_rows: rows,
+  });
+  if (attachErr && !/could not find the function|schema cache/i.test(attachErr.message)) {
+    return json(res, 500, { error: attachErr.message, batch_id: batchId });
+  }
+
   const { data, error } = await ctx.voter.rpc('voter_upsert_batch', {
     rows,
     batch_id: batchId,

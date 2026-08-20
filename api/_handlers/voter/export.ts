@@ -93,6 +93,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (needsTags) {
     await ensureSupporterTags(ctx.voter);
   }
+  if (filters.possible_duplicates === true) {
+    const { error: dupErr } = await ctx.voter.rpc('ensure_possible_duplicates');
+    if (dupErr && !/does not exist|schema cache/i.test(dupErr.message)) {
+      return json(res, 500, { error: dupErr.message });
+    }
+  }
 
   const { data, error } = await ctx.voter.rpc('voter_export_page', {
     filters,

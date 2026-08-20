@@ -35,6 +35,7 @@ type ContactRow = {
   email: string | null;
   phone_digits: string | null;
   is_volunteer: boolean;
+  murmuration_id: string | null;
 };
 
 type GeoRow = {
@@ -76,8 +77,10 @@ function pushContact(
   phone: string | null | undefined,
   phones: string[] | null | undefined,
   isVolunteer: boolean,
+  murmurationId?: string | null,
 ) {
   if (!personId) return;
+  const mid = murmurationId?.trim() || null;
   const emailSet = new Set<string>();
   const e0 = normalizeEmail(email);
   if (e0) emailSet.add(e0);
@@ -93,11 +96,13 @@ function pushContact(
     if (n) phoneSet.add(n);
   }
   if (emailSet.size === 0 && phoneSet.size === 0) {
+    if (!mid) return;
     contacts.push({
       person_id: personId,
       email: null,
       phone_digits: null,
       is_volunteer: isVolunteer,
+      murmuration_id: mid,
     });
     return;
   }
@@ -108,6 +113,7 @@ function pushContact(
         email: null,
         phone_digits: ph,
         is_volunteer: isVolunteer,
+        murmuration_id: mid,
       });
     }
     return;
@@ -119,6 +125,7 @@ function pushContact(
         email: em,
         phone_digits: null,
         is_volunteer: isVolunteer,
+        murmuration_id: mid,
       });
     }
     return;
@@ -130,6 +137,7 @@ function pushContact(
         email: em,
         phone_digits: ph,
         is_volunteer: isVolunteer,
+        murmuration_id: mid,
       });
     }
   }
@@ -210,6 +218,50 @@ export async function buildLeanSyncPayload(client: SupabaseClient): Promise<{
         address: y.address,
       });
     }
+  }
+
+  try {
+    type PersonRow = {
+      id: string;
+      email: string | null;
+      emails: string[] | null;
+      phone: string | null;
+      phones: string[] | null;
+      murmuration_id?: string | null;
+    };
+    let people: PersonRow[];
+    try {
+      people = await fetchAllRows<PersonRow>(
+        client,
+        'people',
+        'id, email, emails, phone, phones, murmuration_id',
+      );
+    } catch {
+      people = await fetchAllRows<PersonRow>(
+        client,
+        'people',
+        'id, email, emails, phone, phones',
+      );
+    }
+    for (const p of people) {
+      pushContact(
+        contacts,
+        p.id,
+        p.email,
+        p.emails,
+        p.phone,
+        p.phones,
+        false,
+        p.murmuration_id,
+      );
+    }
+  } catch (err) {
+    // People table is optional; volunteers / yard signs still sync.
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[lean-sync] people fetch skipped',
+      err instanceof Error ? err.message : err,
+    );
   }
 
   return {

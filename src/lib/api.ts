@@ -9,6 +9,14 @@ import type {
   VoterFilters,
   VoterRow,
 } from './types';
+import type {
+  ParsedPollRow,
+  PreviewSummary,
+  TrackingPoll,
+  TrackingPollImport,
+  TrackingPollResponse,
+} from './trackingPoll/types';
+import type { VoterHit } from './trackingPoll/match';
 
 async function authHeaders(): Promise<HeadersInit> {
   const { data } = await supabase.auth.getSession();
@@ -299,6 +307,60 @@ export function fetchYardSignSuggestions(opts?: {
   );
 }
 
+export function autoMergeSureDuplicates() {
+  return apiFetch<{ merged: number; skipped: number; found: number }>(
+    '/api/voter/merge-duplicates',
+    { method: 'POST' },
+  );
+}
+
+export type ContactSuggestion = {
+  id: number;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  phone: string | null;
+  address_line_1: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  county: string | null;
+  party: string | null;
+  supporter_tag: string | null;
+  petitions: number;
+};
+
+export type ContactSuggestionsResult = {
+  rows: ContactSuggestion[];
+  total: number;
+  page: number;
+  page_size: number;
+  counts: {
+    all?: number;
+    republican?: number;
+    democrat?: number;
+    independent?: number;
+    super?: number;
+  };
+};
+
+export function fetchContactSuggestions(opts?: {
+  party?: string | null;
+  signed_min?: number;
+  page?: number;
+  page_size?: number;
+}) {
+  return apiFetch<ContactSuggestionsResult>('/api/voter/contact-suggestions', {
+    method: 'POST',
+    body: JSON.stringify({
+      party: opts?.party ?? null,
+      signed_min: opts?.signed_min ?? 1,
+      page: opts?.page ?? 1,
+      page_size: opts?.page_size ?? 50,
+    }),
+  });
+}
+
 export function exportPage(opts: {
   filters: VoterFilters;
   afterId?: number | null;
@@ -582,6 +644,68 @@ export async function deletePetitionGroupApi(id: number) {
   return apiFetch<{ ok: boolean }>('/api/voter/petitions', {
     method: 'DELETE',
     body: JSON.stringify({ kind: 'group', id }),
+  });
+}
+
+export async function fetchTrackingPolls() {
+  return apiFetch<{
+    polls: TrackingPoll[];
+    imports: TrackingPollImport[];
+    responses: TrackingPollResponse[];
+  }>('/api/voter/tracking-polls');
+}
+
+export async function previewTrackingPollImport(body: {
+  poll_date: string;
+  filename: string;
+  file_hash?: string | null;
+  rows: ParsedPollRow[];
+}) {
+  return apiFetch<{ preview: PreviewSummary }>('/api/voter/tracking-polls', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'preview', ...body }),
+  });
+}
+
+export async function confirmTrackingPollImport(body: {
+  poll_date: string;
+  filename: string;
+  file_hash?: string | null;
+  rows: ParsedPollRow[];
+  resolutions?: Record<string, 'keep' | 'replace'>;
+}) {
+  return apiFetch<{
+    ok: boolean;
+    import_id: string;
+    imported: number;
+    existing?: number;
+    unmatched?: number;
+    conflicts?: number;
+    poll: TrackingPoll;
+  }>('/api/voter/tracking-polls', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'confirm', ...body }),
+  });
+}
+
+export async function lookupTrackingPollVoters(q: string) {
+  return apiFetch<{ voters: VoterHit[] }>('/api/voter/tracking-polls', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'lookup', q }),
+  });
+}
+
+export async function linkTrackingPollResponse(responseId: number, voterId: number) {
+  return apiFetch<{ ok: boolean }>('/api/voter/tracking-polls', {
+    method: 'PATCH',
+    body: JSON.stringify({ response_id: responseId, voter_id: voterId }),
+  });
+}
+
+export async function rollbackTrackingPollImport(importId: string) {
+  return apiFetch<{ ok: boolean }>('/api/voter/tracking-polls', {
+    method: 'DELETE',
+    body: JSON.stringify({ import_id: importId }),
   });
 }
 

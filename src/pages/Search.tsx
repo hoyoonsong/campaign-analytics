@@ -10,12 +10,14 @@ import {
 import { NearbyPinModal } from "../components/NearbyPinModal";
 import { VoterProfileModal } from "../components/VoterProfileModal";
 import {
+  autoMergeSureDuplicates,
   deleteVoters,
   fetchAnalytics,
   fetchFilterOptions,
   fetchSearch,
   type NearbyKind,
 } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
 import { logActivity } from "../lib/activityLog";
 import {
   downloadVotersCsv,
@@ -26,8 +28,6 @@ import { emptyFilters, summarizeFilters } from "../lib/filters";
 import {
   SEARCH_FILTERS_HANDOFF_KEY,
   clearPersistedSearchFilters,
-  loadPersistedSearchFilters,
-  persistSearchFilters,
 } from "../lib/navigateToSearch";
 import {
   buildPetitionUnits,
@@ -51,10 +51,12 @@ function initialSearchFilters(): VoterFilters {
   } catch {
     /* ignore */
   }
-  return loadPersistedSearchFilters() ?? emptyFilters();
+  return emptyFilters();
 }
 
 export default function Search() {
+  const { profile } = useAuth();
+  const isAdmin = profile?.role === "admin";
   const [filters, setFilters] = useState<VoterFilters>(initialSearchFilters);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -73,6 +75,9 @@ export default function Search() {
     PetitionComboCount[] | null
   >(null);
   const [deleting, setDeleting] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [profileId, setProfileId] = useState<number | null>(null);
   const [nearbyModal, setNearbyModal] = useState<{
@@ -96,15 +101,14 @@ export default function Search() {
   const activeFilterChips = useMemo(() => summarizeFilters(filters), [filters]);
 
   useEffect(() => {
+    clearPersistedSearchFilters();
+  }, []);
+
+  useEffect(() => {
     void fetchFilterOptions()
       .then((o) => setOptions(mergeOptions(o)))
       .catch(() => setOptions(EMPTY_FILTER_OPTIONS));
   }, []);
-
-  // Keep Search filters across navigations / reloads.
-  useEffect(() => {
-    persistSearchFilters(filters);
-  }, [filters]);
 
   useEffect(() => {
     let active = true;
@@ -132,10 +136,11 @@ export default function Search() {
       active = false;
       clearTimeout(t);
     };
-  }, [filters, q, page]);
+  }, [filters, q, page, refreshNonce]);
 
   // Petition combo counts for the current filter universe.
   useEffect(() => {
+    if (!exportOpen) return;
     let active = true;
     const t = setTimeout(() => {
       void fetchAnalytics(
@@ -153,7 +158,7 @@ export default function Search() {
       active = false;
       clearTimeout(t);
     };
-  }, [filters, isDefaultSelection, selectedSlugs]);
+  }, [exportOpen, filters, isDefaultSelection, selectedSlugs]);
 
   // Drop selection when the result universe changes (not on pagination).
   useEffect(() => {
@@ -293,6 +298,45 @@ export default function Search() {
     }
   };
 
+  const handleAutoMerge = async () => {
+    const ok = window.confirm(
+      "Merge records that are the same person: same name + street, same Murmuration ID, name + birth year, or email/phone + name.\n\nThe richer row (party / ID / petitions) is kept. This cannot be undone.",
+    );
+    if (!ok) return;
+    setMerging(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await autoMergeSureDuplicates();
+      void logActivity({
+        action: "update",
+        entityType: "voter",
+        metadata: {
+          label: "Auto-merge sure duplicates",
+          count: res.merged,
+        },
+      });
+      setRefreshNonce((n) => n + 1);
+      if (res.merged === 0) {
+        setError(
+          res.found
+            ? `Found ${res.found.toLocaleString()} duplicate pair${res.found === 1 ? "" : "s"} but none could be merged (${res.skipped} skipped).`
+            : "No name+address duplicates found. Apply migration 0051 (APPLY_FROM=0051 npm run db:apply-campaign) and restart npm run dev if this is the first time.",
+        );
+      } else {
+        setNotice(
+          `Merged ${res.merged.toLocaleString()} duplicate record${res.merged === 1 ? "" : "s"}${
+            res.skipped ? ` (${res.skipped} skipped)` : ""
+          }. Click again if more remain.`,
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Auto-merge failed");
+    } finally {
+      setMerging(false);
+    }
+  };
+
   const handleDeleteSelected = async () => {
     const ids = [...selected];
     if (!ids.length) return;
@@ -351,6 +395,16 @@ export default function Search() {
                 {deleting ? "Deleting…" : `Delete selected (${selected.size})`}
               </button>
             ) : null}
+            {isAdmin ? (
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={merging}
+                onClick={() => void handleAutoMerge()}
+              >
+                {merging ? "Merging…" : "Auto-merge duplicates"}
+              </button>
+            ) : null}
             <button
               type="button"
               className="btn-secondary"
@@ -362,7 +416,6 @@ export default function Search() {
             <button
               type="button"
               className="btn-secondary"
-              disabled={!petitionCombos?.length}
               onClick={() => setExportOpen(true)}
             >
               Petition combos
@@ -452,6 +505,7 @@ export default function Search() {
         </div>
 
         {error && <Alert variant="error">{error}</Alert>}
+        {notice && <Alert variant="success">{notice}</Alert>}
 
         {loading && rows.length === 0 ? (
           <Spinner label="Searching…" />

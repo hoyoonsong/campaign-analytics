@@ -12,9 +12,10 @@ interface NavItem {
 const items: NavItem[] = [
   { to: '/', label: 'Analytics', end: true },
   { to: '/search', label: 'Search' },
-  { to: '/suggestions', label: 'Suggestions' },
+  { to: '/suggestions', label: 'Contact' },
   { to: '/import', label: 'Import' },
   { to: '/petitions', label: 'Petitions' },
+  { to: '/tracking', label: 'Tracking' },
   { to: '/universes', label: 'Universes' },
   { to: '/usage', label: 'Usage' },
   { to: '/logs', label: 'Logs' },

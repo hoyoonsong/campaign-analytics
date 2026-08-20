@@ -616,7 +616,7 @@ export function VoterFiltersPanel({
         ) ? (
           <FilterSection
             title="Data quality"
-            hint="Find rows that look like the same person."
+            hint="Same person twice — not spouses who share an address or phone."
             defaultOpen
             forceOpen={Boolean(q)}
             badge={filters.possible_duplicates ? "on" : null}
@@ -635,7 +635,7 @@ export function VoterFiltersPanel({
                   Possible duplicates
                 </span>
                 <span className="block text-[11px] text-slate-500">
-                  Same email, phone, voter ID, or name + street as another row.
+                  Same name + street, or same name + email/phone. Spouses at the same address are not listed.
                 </span>
               </span>
             </label>

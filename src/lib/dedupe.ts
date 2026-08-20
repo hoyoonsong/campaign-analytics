@@ -41,24 +41,40 @@ export class DedupeIndex {
   private byEmail = new Map<string, number>();
   private byPhone = new Map<string, number>();
   private byNameAddr = new Map<string, number>();
+  private hasStrongId: boolean[] = [];
 
   find(r: Pii): number | null {
     const mid = (r.murmuration_id ?? '').trim();
     if (mid && this.byMurmurationId.has(mid)) return this.byMurmurationId.get(mid)!;
     const vid = (r.voter_id ?? '').trim();
     if (vid && this.byVoterId.has(vid)) return this.byVoterId.get(vid)!;
-    // A row that already has a unique person ID is a different person, even if
-    // they share a household phone/email. Weaker keys are only for ID-less rows.
-    if (mid || vid) return null;
+
+    const allow = (idx: number) => {
+      const incomingStrong = Boolean(mid || vid);
+      const existingStrong = this.hasStrongId[idx] === true;
+      // Two identified people (different IDs) are not the same household match.
+      if (incomingStrong && existingStrong) return false;
+      return true;
+    };
+
     const email = normEmail(r.email);
-    if (email && this.byEmail.has(email)) return this.byEmail.get(email)!;
+    if (email && this.byEmail.has(email)) {
+      const idx = this.byEmail.get(email)!;
+      if (allow(idx)) return idx;
+    }
     const phone = normPhone(r.phone);
-    if (phone.length >= 7 && this.byPhone.has(phone)) return this.byPhone.get(phone)!;
+    if (phone.length >= 7 && this.byPhone.has(phone)) {
+      const idx = this.byPhone.get(phone)!;
+      if (allow(idx)) return idx;
+    }
     const name = normName(r.name);
     const addr = normAddress(r.address);
     if (name && addr) {
       const k = `${name}|${addr}`;
-      if (this.byNameAddr.has(k)) return this.byNameAddr.get(k)!;
+      if (this.byNameAddr.has(k)) {
+        const idx = this.byNameAddr.get(k)!;
+        if (allow(idx)) return idx;
+      }
     }
     return null;
   }
@@ -70,6 +86,7 @@ export class DedupeIndex {
     const phone = normPhone(r.phone);
     const name = normName(r.name);
     const addr = normAddress(r.address);
+    this.hasStrongId[index] = Boolean(mid || vid);
     if (mid && !this.byMurmurationId.has(mid)) this.byMurmurationId.set(mid, index);
     if (vid && !this.byVoterId.has(vid)) this.byVoterId.set(vid, index);
     if (email && !this.byEmail.has(email)) this.byEmail.set(email, index);

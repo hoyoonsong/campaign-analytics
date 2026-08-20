@@ -79,7 +79,16 @@ function aliasesFor(key: string, label: string): string[] {
     label.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(),
   ];
   const extra: Record<string, string[]> = {
-    murmuration_id: ['murmuration id', 'murmuration', 'murm id', 'vanid', 'van id'],
+    murmuration_id: [
+      'murmuration id',
+      'murmuration',
+      'murm id',
+      'vanid',
+      'van id',
+      'profileid',
+      'profile id',
+      'external id',
+    ],
     voter_id: ['state voter id', 'voter id', 'voterid'],
     first_name: ['first name', 'firstname', 'names > first name'],
     last_name: ['last name', 'lastname', 'names > last name'],
@@ -159,17 +168,23 @@ function petitionTargetFrom(p: Petition): ImportTarget {
 
 export function ImportMappingModal({
   title = 'Map your columns',
+  description,
   headers,
   sampleRows,
   petitions = [],
+  targets: targetsOverride,
+  extraTargets = [],
   onCreatePetition,
   onCancel,
   onConfirm,
 }: {
   title?: string;
+  description?: string;
   headers: string[];
   sampleRows: string[][];
   petitions?: Petition[];
+  targets?: ImportTarget[];
+  extraTargets?: ImportTarget[];
   onCreatePetition?: (label: string) => Promise<Petition | null>;
   onCancel: () => void;
   onConfirm: (mapping: Record<string, string>) => void | Promise<void>;
@@ -187,7 +202,7 @@ export function ImportMappingModal({
     ];
   }, [petitions, createdPetitions]);
 
-  const targets = useMemo(() => {
+  const voterTargets = useMemo(() => {
     const base = VOTER_IMPORT_TARGETS.filter((t) => !t.key.startsWith('sig_'));
     const sigs: ImportTarget[] = allPetitions.map(petitionTargetFrom);
     // Keep legacy sig_* aliases so old CSV headers still auto-guess.
@@ -211,6 +226,8 @@ export function ImportMappingModal({
     }
     return [...base, ...sigs];
   }, [allPetitions]);
+
+  const targets = targetsOverride ?? [...voterTargets, ...extraTargets];
 
   const guess = useMemo(() => {
     const m: Record<string, string> = {};
@@ -253,17 +270,32 @@ export function ImportMappingModal({
   }, [guess, headers]);
 
   const assigned = new Set(Object.values(colMap).filter(Boolean));
-  // Prefer Murmuration ID for 1:1 mapping; State Voter ID is an acceptable fallback.
-  const hasIdentityKey =
-    assigned.has('murmuration_id') || assigned.has('voter_id');
-  const missingRequired = [
-    ...VOTER_IMPORT_TARGETS.filter(
-      (t) => t.required && t.key !== 'murmuration_id' && !assigned.has(t.key),
-    ),
-    ...(!hasIdentityKey
-      ? [{ key: 'murmuration_id', label: 'Murmuration ID (or State Voter ID)' }]
-      : []),
-  ];
+  const hasIdentityKey = targetsOverride
+    ? assigned.has('source_profile_id') ||
+      assigned.has('source_phone') ||
+      assigned.has('source_email') ||
+      assigned.has('murmuration_id')
+    : assigned.has('murmuration_id') || assigned.has('voter_id');
+  const hasPollColumn = [...assigned].some(
+    (k) => k.startsWith('poll:') || k === 'raw_answer',
+  );
+  const missingRequired = targetsOverride
+    ? [
+        ...(!hasIdentityKey
+          ? [{ key: 'id', label: 'Profile ID, phone, or email' }]
+          : []),
+        ...(!hasPollColumn
+          ? [{ key: 'poll', label: 'at least one poll column' }]
+          : []),
+      ]
+    : [
+        ...VOTER_IMPORT_TARGETS.filter(
+          (t) => t.required && t.key !== 'murmuration_id' && !assigned.has(t.key),
+        ),
+        ...(!hasIdentityKey
+          ? [{ key: 'murmuration_id', label: 'Murmuration ID (or State Voter ID)' }]
+          : []),
+      ];
 
   const unmappedPetitionHeaders = headers.filter(
     (h) => !colMap[h] && looksLikePetitionHeader(h),
@@ -351,9 +383,8 @@ export function ImportMappingModal({
         <div className="border-b border-slate-200 px-4 py-3 sm:px-5">
           <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
           <p className="mt-1 text-sm text-slate-500">
-            Assign each spreadsheet column to a voter field (or ignore). Same flow as
-            the campaign portal. Signature columns can be mapped to a petition or added
-            as a new one — they should not stay on Ignore.
+            {description ??
+              'Assign each spreadsheet column to a voter field (or ignore). Same flow as the campaign portal. Signature columns can be mapped to a petition or added as a new one — they should not stay on Ignore.'}
           </p>
         </div>
 
@@ -473,7 +504,9 @@ export function ImportMappingModal({
           {missingRequired.length > 0 && (
             <p className="text-sm text-amber-700">
               Required: map {missingRequired.map((t) => t.label).join(', ')}.
-              Murmuration ID is the preferred 1:1 key; State Voter ID also works.
+              {targetsOverride
+                ? ''
+                : ' Murmuration ID is the preferred 1:1 key; State Voter ID also works.'}
             </p>
           )}
         </div>

@@ -71,6 +71,12 @@ const allFiles = [
   'supabase/migrations/0044_map_and_analytics_fast.sql',
   'supabase/migrations/0045_petition_groups_delete.sql',
   'supabase/migrations/0046_delete_petition_no_replica.sql',
+  'supabase/migrations/0047_tracking_polls.sql',
+  'supabase/migrations/0048_tracking_poll_dashboard.sql',
+  'supabase/migrations/0049_no_statement_timeout.sql',
+  'supabase/migrations/0050_merge_and_contact.sql',
+  'supabase/migrations/0051_merge_name_address.sql',
+  'supabase/migrations/0052_duplicates_same_person.sql',
 ];
 
 const applyFrom = process.env.APPLY_FROM || process.argv[2] || '0015';

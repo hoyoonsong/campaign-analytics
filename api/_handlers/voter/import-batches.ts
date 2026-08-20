@@ -69,6 +69,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           updated_at: new Date().toISOString(),
         })
         .eq('id', 1);
+      await ctx.voter.rpc('mark_possible_duplicates_stale');
     }
 
     return json(res, 200, { ok: true });

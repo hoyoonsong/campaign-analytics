@@ -201,10 +201,16 @@ function parseTagUniverses(
   return out;
 }
 
+let geoCache: { at: number; points: GeoPoint[] } | null = null;
+const GEO_TTL_MS = 5 * 60 * 1000;
+
 /** Prefer lean synced pins — avoids FormHandler round-trips on every Search page. */
 export async function loadLeanGeo(
   voter: SupabaseClient,
 ): Promise<GeoPoint[]> {
+  if (geoCache && Date.now() - geoCache.at < GEO_TTL_MS) {
+    return geoCache.points;
+  }
   const pageSize = 1000;
   const points: GeoPoint[] = [];
   for (let from = 0; ; from += pageSize) {
@@ -229,6 +235,7 @@ export async function loadLeanGeo(
     }
     if (batch.length < pageSize) break;
   }
+  geoCache = { at: Date.now(), points };
   return points;
 }
 

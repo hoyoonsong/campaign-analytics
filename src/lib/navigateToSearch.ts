@@ -43,7 +43,6 @@ export function navigateToSearch(
   const filters: VoterFilters = { ...emptyFilters(), ...patch };
   try {
     sessionStorage.setItem(SEARCH_FILTERS_HANDOFF_KEY, JSON.stringify(filters));
-    persistSearchFilters(filters);
   } catch {
     /* ignore */
   }

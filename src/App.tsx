@@ -9,8 +9,9 @@ const Analytics = lazy(() => import('./pages/Analytics'));
 const Search = lazy(() => import('./pages/Search'));
 const ImportPage = lazy(() => import('./pages/Import'));
 const Petitions = lazy(() => import('./pages/Petitions'));
+const TrackingPolls = lazy(() => import('./pages/TrackingPolls'));
 const Universes = lazy(() => import('./pages/Universes'));
-const YardSignSuggestions = lazy(() => import('./pages/YardSignSuggestions'));
+const ContactSuggestions = lazy(() => import('./pages/ContactSuggestions'));
 const Usage = lazy(() => import('./pages/Usage'));
 const ActivityLogs = lazy(() => import('./pages/ActivityLogs'));
 
@@ -29,9 +30,10 @@ export default function App() {
         >
           <Route path="/" element={<Analytics />} />
           <Route path="/search" element={<Search />} />
-          <Route path="/suggestions" element={<YardSignSuggestions />} />
+          <Route path="/suggestions" element={<ContactSuggestions />} />
           <Route path="/import" element={<ImportPage />} />
           <Route path="/petitions" element={<Petitions />} />
+          <Route path="/tracking" element={<TrackingPolls />} />
           <Route path="/universes" element={<Universes />} />
           <Route path="/usage" element={<Usage />} />
           <Route path="/logs" element={<ActivityLogs />} />
