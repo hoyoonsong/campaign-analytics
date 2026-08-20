@@ -48,13 +48,16 @@ function voterDisplayName(v: {
 }
 
 async function fetchAll<T>(
-  query: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  query: (
+    from: number,
+    to: number,
+  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
 ): Promise<{ data: T[]; error: string | null }> {
   const page = 1000;
   const out: T[] = [];
   const first = await query(0, page - 1);
   if (first.error) return { data: [], error: first.error.message };
-  out.push(...(first.data ?? []));
+  out.push(...(((first.data as T[] | null) ?? []) as T[]));
   if (out.length < page) return { data: out, error: null };
 
   let from = page;
@@ -64,7 +67,7 @@ async function fetchAll<T>(
     );
     for (const { data, error } of wave) {
       if (error) return { data: out, error: error.message };
-      const rows = data ?? [];
+      const rows = ((data as T[] | null) ?? []) as T[];
       out.push(...rows);
       if (rows.length < page) return { data: out, error: null };
     }
@@ -322,6 +325,8 @@ async function buildPreview(
   };
 }
 
+type DashVoter = { party?: string | null; contact_tags?: string | null };
+
 type DashRow = {
   id?: number;
   poll_id: number;
@@ -331,36 +336,44 @@ type DashRow = {
   voter_id?: number | null;
   party?: string | null;
   gender?: string | null;
-  voters?: { party?: string | null; contact_tags?: string | null } | null;
+  voters?: DashVoter | DashVoter[] | null;
 };
+
+function embeddedVoter(v: DashRow['voters']): DashVoter | null {
+  if (!v) return null;
+  return Array.isArray(v) ? (v[0] ?? null) : v;
+}
 
 function mapDashResponses(
   raw: DashRow[],
   dateById: Map<number, string>,
 ) {
-  return raw.map((r) => ({
-    id: r.id ?? 0,
-    poll_id: r.poll_id,
-    poll_date: r.poll_date || dateById.get(r.poll_id) || '',
-    import_id: null,
-    voter_id: r.voter_id ?? null,
-    person_key: r.person_key,
-    match_method: 'unmatched',
-    match_status: r.voter_id ? 'matched' : 'unmatched',
-    source_profile_id: null,
-    source_phone: null,
-    source_email: null,
-    source_name: null,
-    raw_answer: null,
-    normalized_answer: r.normalized_answer,
-    answered_at: null,
-    display_name: null,
-    display_phone: null,
-    display_email: null,
-    profile_id: null,
-    party: r.party ?? r.voters?.party ?? null,
-    gender: r.gender ?? r.voters?.contact_tags ?? null,
-  }));
+  return raw.map((r) => {
+    const voter = embeddedVoter(r.voters);
+    return {
+      id: r.id ?? 0,
+      poll_id: r.poll_id,
+      poll_date: r.poll_date || dateById.get(r.poll_id) || '',
+      import_id: null,
+      voter_id: r.voter_id ?? null,
+      person_key: r.person_key,
+      match_method: 'unmatched',
+      match_status: r.voter_id ? 'matched' : 'unmatched',
+      source_profile_id: null,
+      source_phone: null,
+      source_email: null,
+      source_name: null,
+      raw_answer: null,
+      normalized_answer: r.normalized_answer,
+      answered_at: null,
+      display_name: null,
+      display_phone: null,
+      display_email: null,
+      profile_id: null,
+      party: r.party ?? voter?.party ?? null,
+      gender: r.gender ?? voter?.contact_tags ?? null,
+    };
+  });
 }
 
 async function loadDashboardRest(voter: SupabaseClient) {
