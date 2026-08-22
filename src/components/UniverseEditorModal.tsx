@@ -12,7 +12,10 @@ import type {
 
 type Chip = { value: string; label: string };
 
-const FORMHANDLER_FLAGS: { field: FilterAnyOfField; label: string }[] = [
+const FORMHANDLER_FLAGS: {
+  field: Exclude<FilterAnyOfField, 'support_score'>;
+  label: string;
+}[] = [
   { field: 'campaign_volunteer', label: 'Volunteer' },
   { field: 'campaign_donor', label: 'Donor' },
   { field: 'campaign_attendee', label: 'Event attendee' },
@@ -134,14 +137,16 @@ function toggleStringValue(
   );
 }
 
-function toggleYesFlag(filters: VoterFilters, field: FilterAnyOfField): VoterFilters {
+function toggleYesFlag(
+  filters: VoterFilters,
+  field: Exclude<FilterAnyOfField, 'support_score'>,
+): VoterFilters {
   const current = stringValues(ruleFor(filters.any_of ?? [], field));
   const on = current.some((v) => v.toLowerCase() === 'yes');
-  return replaceRule(
-    filters,
-    field,
-    on ? null : { field, values: ['Yes'] },
-  );
+  const next: FilterAnyOfRule | null = on
+    ? null
+    : { field, values: ['Yes'] };
+  return replaceRule(filters, field, next);
 }
 
 function toggleScore(filters: VoterFilters, n: number): VoterFilters {
