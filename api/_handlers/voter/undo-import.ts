@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
 import { logActivityServer } from '../../_lib/log.js';
+import { invalidateMapSnapshots } from '../../_lib/mapSnapshots.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
@@ -63,6 +64,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       updated_at: new Date().toISOString(),
     })
     .eq('id', 1);
+
+  await invalidateMapSnapshots(ctx.voter);
 
   return json(res, 200, {
     deleted: result.deleted ?? 0,

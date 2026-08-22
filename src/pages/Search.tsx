@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import { Alert, EmptyState, PageHeader, Spinner } from "../components/ui";
 import { PetitionExportModal } from "../components/PetitionExportModal";
 import {
@@ -27,7 +28,10 @@ import {
 import { emptyFilters, summarizeFilters } from "../lib/filters";
 import {
   SEARCH_FILTERS_HANDOFF_KEY,
+  SEARCH_FILTER_FIND_KEY,
+  SEARCH_OPEN_FILTERS_KEY,
   clearPersistedSearchFilters,
+  type SearchLocationState,
 } from "../lib/navigateToSearch";
 import {
   buildPetitionUnits,
@@ -41,11 +45,19 @@ import type { PetitionComboCount, VoterFilters, VoterRow } from "../lib/types";
 
 const PAGE_SIZE = 50;
 
-function initialSearchFilters(): VoterFilters {
+function filtersFromLocation(state: unknown): VoterFilters | null {
+  if (!state || typeof state !== "object") return null;
+  const filters = (state as SearchLocationState).filters;
+  if (!filters || typeof filters !== "object") return null;
+  return { ...emptyFilters(), ...filters };
+}
+
+function readHandoffFilters(state: unknown): VoterFilters {
+  const fromNav = filtersFromLocation(state);
+  if (fromNav) return fromNav;
   try {
     const handoff = sessionStorage.getItem(SEARCH_FILTERS_HANDOFF_KEY);
     if (handoff) {
-      sessionStorage.removeItem(SEARCH_FILTERS_HANDOFF_KEY);
       return { ...emptyFilters(), ...JSON.parse(handoff) };
     }
   } catch {
@@ -54,11 +66,42 @@ function initialSearchFilters(): VoterFilters {
   return emptyFilters();
 }
 
+function readFiltersOpen(state: unknown): boolean {
+  if (state && typeof state === "object" && (state as SearchLocationState).openFilters) {
+    return true;
+  }
+  try {
+    return sessionStorage.getItem(SEARCH_OPEN_FILTERS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function readFilterFind(state: unknown): string {
+  if (state && typeof state === "object") {
+    const find = (state as SearchLocationState).find;
+    if (typeof find === "string" && find.trim()) return find.trim();
+  }
+  try {
+    return sessionStorage.getItem(SEARCH_FILTER_FIND_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export default function Search() {
   const { profile } = useAuth();
   const isAdmin = profile?.role === "admin";
-  const [filters, setFilters] = useState<VoterFilters>(initialSearchFilters);
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const location = useLocation();
+  const [filters, setFilters] = useState<VoterFilters>(() =>
+    readHandoffFilters(location.state),
+  );
+  const [filtersOpen, setFiltersOpen] = useState(() =>
+    readFiltersOpen(location.state),
+  );
+  const [filterFind, setFilterFind] = useState(() =>
+    readFilterFind(location.state),
+  );
   const [exportOpen, setExportOpen] = useState(false);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
@@ -102,6 +145,13 @@ export default function Search() {
 
   useEffect(() => {
     clearPersistedSearchFilters();
+    try {
+      sessionStorage.removeItem(SEARCH_FILTERS_HANDOFF_KEY);
+      sessionStorage.removeItem(SEARCH_OPEN_FILTERS_KEY);
+      sessionStorage.removeItem(SEARCH_FILTER_FIND_KEY);
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   useEffect(() => {
@@ -451,7 +501,10 @@ export default function Search() {
       <VoterFiltersPanel
         asDrawer
         open={filtersOpen}
-        onClose={() => setFiltersOpen(false)}
+        onClose={() => {
+          setFiltersOpen(false);
+          setFilterFind("");
+        }}
         filters={filters}
         onChange={(f) => {
           setPage(1);
@@ -459,6 +512,7 @@ export default function Search() {
         }}
         options={options}
         matchCount={total}
+        findQuery={filterFind}
       />
 
       <PetitionExportModal

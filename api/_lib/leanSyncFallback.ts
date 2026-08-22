@@ -5,6 +5,11 @@ type ContactRow = {
   email: string | null;
   phone_digits: string | null;
   is_volunteer: boolean;
+  is_donor?: boolean;
+  is_attendee?: boolean;
+  is_yard_sign?: boolean;
+  is_newsletter?: boolean;
+  murmuration_id?: string | null;
 };
 
 type GeoRow = {

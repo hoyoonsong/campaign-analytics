@@ -21,7 +21,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return json(res, 405, { error: 'Method not allowed' });
   }
 
-  const body = readBody<{ filters?: unknown; limit?: number }>(req);
+  const body = readBody<{ filters?: unknown; limit?: number; geo_only?: boolean }>(
+    req,
+  );
+
+  if (body.geo_only) {
+    const campaign_geo = await fetchAllCampaignGeo(ctx.voter);
+    return json(res, 200, { points: [], campaign_geo, truncated: false });
+  }
 
   const [{ data, error }, geoRes] = await Promise.all([
     ctx.voter.rpc('voter_map_points', {

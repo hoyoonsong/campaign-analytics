@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { randomUUID } from 'node:crypto';
 
 function env(name: string): string {
   const v = process.env[name];
@@ -30,11 +31,23 @@ export function normalizeEmail(email: string | null | undefined): string | null 
   return e || null;
 }
 
+type ContactRoles = {
+  volunteer?: boolean;
+  donor?: boolean;
+  attendee?: boolean;
+  yardSign?: boolean;
+  newsletter?: boolean;
+};
+
 type ContactRow = {
   person_id: string;
   email: string | null;
   phone_digits: string | null;
   is_volunteer: boolean;
+  is_donor: boolean;
+  is_attendee: boolean;
+  is_yard_sign: boolean;
+  is_newsletter: boolean;
   murmuration_id: string | null;
 };
 
@@ -69,6 +82,26 @@ async function fetchAllRows<T extends Record<string, unknown>>(
   return out;
 }
 
+function contactRow(
+  personId: string,
+  email: string | null,
+  phoneDigitsVal: string | null,
+  murmurationId: string | null,
+  roles: ContactRoles,
+): ContactRow {
+  return {
+    person_id: personId,
+    email,
+    phone_digits: phoneDigitsVal,
+    is_volunteer: Boolean(roles.volunteer),
+    is_donor: Boolean(roles.donor),
+    is_attendee: Boolean(roles.attendee),
+    is_yard_sign: Boolean(roles.yardSign),
+    is_newsletter: Boolean(roles.newsletter),
+    murmuration_id: murmurationId,
+  };
+}
+
 function pushContact(
   contacts: ContactRow[],
   personId: string | null | undefined,
@@ -76,10 +109,9 @@ function pushContact(
   emails: string[] | null | undefined,
   phone: string | null | undefined,
   phones: string[] | null | undefined,
-  isVolunteer: boolean,
+  roles: ContactRoles,
   murmurationId?: string | null,
 ) {
-  if (!personId) return;
   const mid = murmurationId?.trim() || null;
   const emailSet = new Set<string>();
   const e0 = normalizeEmail(email);
@@ -95,51 +127,46 @@ function pushContact(
     const n = phoneDigits(p);
     if (n) phoneSet.add(n);
   }
+  const id = personId || (emailSet.size || phoneSet.size || mid ? randomUUID() : null);
+  if (!id) return;
   if (emailSet.size === 0 && phoneSet.size === 0) {
     if (!mid) return;
-    contacts.push({
-      person_id: personId,
-      email: null,
-      phone_digits: null,
-      is_volunteer: isVolunteer,
-      murmuration_id: mid,
-    });
+    contacts.push(contactRow(id, null, null, mid, roles));
     return;
   }
   if (emailSet.size === 0) {
     for (const ph of phoneSet) {
-      contacts.push({
-        person_id: personId,
-        email: null,
-        phone_digits: ph,
-        is_volunteer: isVolunteer,
-        murmuration_id: mid,
-      });
+      contacts.push(contactRow(id, null, ph, mid, roles));
     }
     return;
   }
   if (phoneSet.size === 0) {
     for (const em of emailSet) {
-      contacts.push({
-        person_id: personId,
-        email: em,
-        phone_digits: null,
-        is_volunteer: isVolunteer,
-        murmuration_id: mid,
-      });
+      contacts.push(contactRow(id, em, null, mid, roles));
     }
     return;
   }
   for (const em of emailSet) {
     for (const ph of phoneSet) {
-      contacts.push({
-        person_id: personId,
-        email: em,
-        phone_digits: ph,
-        is_volunteer: isVolunteer,
-        murmuration_id: mid,
-      });
+      contacts.push(contactRow(id, em, ph, mid, roles));
     }
+  }
+}
+
+async function fetchTableOptional<T extends Record<string, unknown>>(
+  client: SupabaseClient,
+  table: string,
+  columns: string,
+): Promise<T[]> {
+  try {
+    return await fetchAllRows<T>(client, table, columns);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[lean-sync] ${table} fetch skipped`,
+      err instanceof Error ? err.message : err,
+    );
+    return [];
   }
 }
 
@@ -149,6 +176,45 @@ export async function buildLeanSyncPayload(client: SupabaseClient): Promise<{
   volunteer_count: number;
   yard_sign_count: number;
 }> {
+  type PersonRow = {
+    id: string;
+    email: string | null;
+    emails: string[] | null;
+    phone: string | null;
+    phones: string[] | null;
+    murmuration_id?: string | null;
+  };
+
+  const peopleById = new Map<string, PersonRow>();
+  try {
+    let people: PersonRow[];
+    try {
+      people = await fetchAllRows<PersonRow>(
+        client,
+        'people',
+        'id, email, emails, phone, phones, murmuration_id',
+      );
+    } catch {
+      people = await fetchAllRows<PersonRow>(
+        client,
+        'people',
+        'id, email, emails, phone, phones',
+      );
+    }
+    for (const p of people) peopleById.set(p.id, p);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[lean-sync] people fetch skipped',
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  const midFor = (personId: string | null | undefined) => {
+    if (!personId) return null;
+    return peopleById.get(personId)?.murmuration_id ?? null;
+  };
+
   const volunteers = await fetchAllRows<{
     id: string;
     person_id: string | null;
@@ -177,8 +243,41 @@ export async function buildLeanSyncPayload(client: SupabaseClient): Promise<{
     lng: number | null;
   }>(client, 'yard_signs', 'id, person_id, name, email, phone, address, lat, lng');
 
+  const donors = await fetchTableOptional<{
+    person_id: string | null;
+    email: string | null;
+    phone: string | null;
+  }>(client, 'donors', 'person_id, email, phone');
+
+  const attendances = await fetchTableOptional<{
+    person_id: string | null;
+    email: string | null;
+    phone: string | null;
+    attended: boolean | null;
+  }>(client, 'event_attendances', 'person_id, email, phone, attended');
+
+  const newsletters = await fetchTableOptional<{
+    person_id: string | null;
+    email: string | null;
+    phone: string | null;
+    status: string | null;
+  }>(client, 'newsletters', 'person_id, email, phone, status');
+
   const contacts: ContactRow[] = [];
   const geo: GeoRow[] = [];
+
+  for (const p of peopleById.values()) {
+    pushContact(
+      contacts,
+      p.id,
+      p.email,
+      p.emails,
+      p.phone,
+      p.phones,
+      {},
+      p.murmuration_id,
+    );
+  }
 
   for (const v of volunteers) {
     pushContact(
@@ -188,7 +287,8 @@ export async function buildLeanSyncPayload(client: SupabaseClient): Promise<{
       v.emails,
       v.phone,
       v.phones,
-      true,
+      { volunteer: true },
+      midFor(v.person_id),
     );
     if (v.lat != null && v.lng != null && Number.isFinite(v.lat) && Number.isFinite(v.lng)) {
       geo.push({
@@ -205,7 +305,16 @@ export async function buildLeanSyncPayload(client: SupabaseClient): Promise<{
   }
 
   for (const y of yardSigns) {
-    pushContact(contacts, y.person_id, y.email, null, y.phone, null, false);
+    pushContact(
+      contacts,
+      y.person_id,
+      y.email,
+      null,
+      y.phone,
+      null,
+      { yardSign: true },
+      midFor(y.person_id),
+    );
     if (y.lat != null && y.lng != null && Number.isFinite(y.lat) && Number.isFinite(y.lng)) {
       geo.push({
         source_id: y.id,
@@ -220,47 +329,44 @@ export async function buildLeanSyncPayload(client: SupabaseClient): Promise<{
     }
   }
 
-  try {
-    type PersonRow = {
-      id: string;
-      email: string | null;
-      emails: string[] | null;
-      phone: string | null;
-      phones: string[] | null;
-      murmuration_id?: string | null;
-    };
-    let people: PersonRow[];
-    try {
-      people = await fetchAllRows<PersonRow>(
-        client,
-        'people',
-        'id, email, emails, phone, phones, murmuration_id',
-      );
-    } catch {
-      people = await fetchAllRows<PersonRow>(
-        client,
-        'people',
-        'id, email, emails, phone, phones',
-      );
-    }
-    for (const p of people) {
-      pushContact(
-        contacts,
-        p.id,
-        p.email,
-        p.emails,
-        p.phone,
-        p.phones,
-        false,
-        p.murmuration_id,
-      );
-    }
-  } catch (err) {
-    // People table is optional; volunteers / yard signs still sync.
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[lean-sync] people fetch skipped',
-      err instanceof Error ? err.message : err,
+  for (const d of donors) {
+    pushContact(
+      contacts,
+      d.person_id,
+      d.email,
+      null,
+      d.phone,
+      null,
+      { donor: true },
+      midFor(d.person_id),
+    );
+  }
+
+  for (const a of attendances) {
+    if (a.attended === false) continue;
+    pushContact(
+      contacts,
+      a.person_id,
+      a.email,
+      null,
+      a.phone,
+      null,
+      { attendee: true },
+      midFor(a.person_id),
+    );
+  }
+
+  for (const n of newsletters) {
+    if ((n.status ?? 'subscribed').toLowerCase() === 'unsubscribed') continue;
+    pushContact(
+      contacts,
+      n.person_id,
+      n.email,
+      null,
+      n.phone,
+      null,
+      { newsletter: true },
+      midFor(n.person_id),
     );
   }
 

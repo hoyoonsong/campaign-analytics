@@ -418,6 +418,11 @@ const ANY_OF_FIELDS: { field: FilterAnyOfField; label: string }[] = [
   { field: "volunteer_interest", label: "Volunteer interest" },
   { field: "newsletter", label: "Newsletter" },
   { field: "attended_event", label: "Attended event" },
+  { field: "campaign_volunteer", label: "FormHandler volunteer" },
+  { field: "campaign_donor", label: "FormHandler donor" },
+  { field: "campaign_attendee", label: "FormHandler event attendee" },
+  { field: "campaign_yard_sign", label: "FormHandler yard sign" },
+  { field: "campaign_newsletter", label: "FormHandler newsletter" },
 ];
 
 export function VoterFiltersPanel({
@@ -430,6 +435,7 @@ export function VoterFiltersPanel({
   open = true,
   onClose,
   showPossibleDuplicates = true,
+  findQuery = "",
 }: {
   filters: VoterFilters;
   onChange: (next: VoterFilters) => void;
@@ -439,6 +445,8 @@ export function VoterFiltersPanel({
   open?: boolean;
   onClose?: () => void;
   showPossibleDuplicates?: boolean;
+  /** Prefill “Find a filter…” (chart click → Search). */
+  findQuery?: string;
 }) {
   const opts = mergeOptions(options);
   const { activePetitions: petitions } = usePetitions();
@@ -447,11 +455,15 @@ export function VoterFiltersPanel({
   );
   const [draftValues, setDraftValues] = useState<string[]>([]);
   const [draftScores, setDraftScores] = useState<number[]>([]);
-  const [filterQuery, setFilterQuery] = useState("");
+  const [filterQuery, setFilterQuery] = useState(findQuery);
+
+  useEffect(() => {
+    if (findQuery) setFilterQuery(findQuery);
+  }, [findQuery]);
 
   const q = filterQuery.trim().toLowerCase();
   const matchSection = (...labels: string[]) =>
-    !q || labels.some((l) => l.toLowerCase().includes(q));
+    !q || labels.some((l) => l.toLowerCase().includes(q) || q.includes(l.toLowerCase()));
 
   const activeChips = useMemo(() => summarizeFilters(filters), [filters]);
 
@@ -483,6 +495,12 @@ export function VoterFiltersPanel({
         return opts.attended_events;
       case "convos_poll_question":
         return ["C) Not Sure", "A) Yes", "B) No"];
+      case "campaign_volunteer":
+      case "campaign_donor":
+      case "campaign_attendee":
+      case "campaign_yard_sign":
+      case "campaign_newsletter":
+        return ["Yes"];
       default:
         return [];
     }
@@ -500,11 +518,18 @@ export function VoterFiltersPanel({
   };
 
   const toggleSigned = (key: SignedPetitionKey) => {
-    const current = filters.signed ?? [];
-    const next = current.includes(key)
-      ? current.filter((k) => k !== key)
-      : [...current, key];
-    onChange({ ...filters, signed: next });
+    const current = new Set(filters.signed ?? []);
+    if (filters.signed_min != null && filters.signed_min > 0) {
+      for (const s of filters.signed_min_of ?? []) current.add(s);
+    }
+    if (current.has(key)) current.delete(key);
+    else current.add(key);
+    onChange({
+      ...filters,
+      signed: [...current],
+      signed_min: null,
+      signed_min_of: [],
+    });
   };
 
   const setFlag = (
@@ -751,29 +776,60 @@ export function VoterFiltersPanel({
           </FilterSection>
         ) : null}
 
-        {matchSection("petition", "signed", "open", "reproductive", "achilles") ? (
+        {matchSection(
+          "petition",
+          "signed",
+          "open",
+          "reproductive",
+          "achilles",
+          ...petitions.flatMap((p) => [p.label, p.short_label, p.slug]),
+        ) ? (
           <FilterSection
             title="Petitions"
-            hint="Must have signed each checked petition."
+            hint={
+              filters.signed_min != null && filters.signed_min > 0
+                ? `Signed at least ${filters.signed_min} of the highlighted petitions.`
+                : "Must have signed each checked petition."
+            }
             defaultOpen={!q}
             forceOpen={Boolean(q)}
-            badge={filters.signed?.length ? String(filters.signed.length) : null}
+            badge={
+              (filters.signed?.length ||
+              (filters.signed_min != null && filters.signed_min > 0
+                ? filters.signed_min_of?.length
+                : 0))
+                ? String(
+                    new Set([
+                      ...(filters.signed ?? []),
+                      ...((filters.signed_min != null && filters.signed_min > 0
+                        ? filters.signed_min_of
+                        : []) ?? []),
+                    ]).size,
+                  )
+                : null
+            }
           >
             <div className="space-y-1">
-              {petitions.map((opt) => (
-                <label
-                  key={opt.slug}
-                  className="flex cursor-pointer items-center gap-2 text-sm"
-                >
-                  <input
-                    type="checkbox"
-                    checked={(filters.signed ?? []).includes(opt.slug)}
-                    onChange={() => toggleSigned(opt.slug)}
-                    className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-                  />
-                  <span className="truncate">{opt.label}</span>
-                </label>
-              ))}
+              {petitions.map((opt) => {
+                const signedOn = new Set(filters.signed ?? []);
+                if (filters.signed_min != null && filters.signed_min > 0) {
+                  for (const s of filters.signed_min_of ?? []) signedOn.add(s);
+                }
+                return (
+                  <label
+                    key={opt.slug}
+                    className="flex cursor-pointer items-center gap-2 text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={signedOn.has(opt.slug)}
+                      onChange={() => toggleSigned(opt.slug)}
+                      className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                    />
+                    <span className="truncate">{opt.label}</span>
+                  </label>
+                );
+              })}
             </div>
           </FilterSection>
         ) : null}
@@ -827,6 +883,8 @@ export function VoterFiltersPanel({
               values={opts.parties}
               selected={filters.party ?? []}
               onToggle={(v) => setMulti("party", v)}
+              searchable
+              searchPlaceholder="Search parties…"
             />
             <MultiSelect
               label="City (Idaho)"
@@ -1226,7 +1284,7 @@ function MultiSelect({
   return (
     <div>
       <p className="label">{label}</p>
-      {searchable && values.length > 8 ? (
+      {searchable && values.length > 4 ? (
         <input
           className="input mb-1.5 text-sm"
           placeholder={searchPlaceholder}

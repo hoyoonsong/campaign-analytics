@@ -142,6 +142,42 @@ export function fetchMapPoints(filters: VoterFilters, limit = 2500) {
   });
 }
 
+export function fetchMapCampaignGeo() {
+  return apiFetch<{
+    campaign_geo?: Array<{
+      kind: 'volunteer' | 'yard_sign';
+      lat: number;
+      lng: number;
+      source_id?: string;
+      name?: string | null;
+      email?: string | null;
+      phone?: string | null;
+      address?: string | null;
+    }>;
+  }>('/api/voter/map-points', {
+    method: 'POST',
+    body: JSON.stringify({ geo_only: true }),
+  });
+}
+
+export function fetchMapSnapshot(county: string, haveVersion?: number | null) {
+  return apiFetch<{
+    unchanged?: boolean;
+    version: number;
+    county: string;
+    count: number;
+    ids?: number[];
+    lat?: number[];
+    lng?: number[];
+  }>('/api/voter/map-snapshot', {
+    method: 'POST',
+    body: JSON.stringify({
+      county,
+      have_version: haveVersion ?? null,
+    }),
+  });
+}
+
 export function fetchSearch(opts: {
   filters: VoterFilters;
   q?: string;
@@ -388,7 +424,12 @@ export function listUniverses() {
 export function createUniverse(
   name: string,
   filters: VoterFilters,
-  opts?: { supporter_tag?: string | null; tag_priority?: number },
+  opts?: {
+    supporter_tag?: string | null;
+    tag_priority?: number;
+    source?: string | null;
+    skip_recompute?: boolean;
+  },
 ) {
   return apiFetch<{ universe: SavedUniverse }>('/api/voter/universes', {
     method: 'POST',
@@ -397,6 +438,8 @@ export function createUniverse(
       filters: toFilterPayload(filters),
       supporter_tag: opts?.supporter_tag ?? null,
       tag_priority: opts?.tag_priority ?? 0,
+      source: opts?.source ?? null,
+      skip_recompute: opts?.skip_recompute ?? false,
     }),
   });
 }
@@ -408,6 +451,8 @@ export function updateUniverse(
     filters?: VoterFilters;
     supporter_tag?: string | null;
     tag_priority?: number;
+    source?: string | null;
+    skip_recompute?: boolean;
   },
 ) {
   return apiFetch<{ universe: SavedUniverse }>('/api/voter/universes', {
@@ -417,8 +462,17 @@ export function updateUniverse(
       name: patch.name,
       supporter_tag: patch.supporter_tag,
       tag_priority: patch.tag_priority,
+      source: patch.source,
+      skip_recompute: patch.skip_recompute ?? false,
       filters: patch.filters ? toFilterPayload(patch.filters) : undefined,
     }),
+  });
+}
+
+export function recomputeSupporterTags() {
+  return apiFetch<{ ok: boolean }>('/api/voter/universes', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'recompute_tags' }),
   });
 }
 

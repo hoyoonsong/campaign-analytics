@@ -95,6 +95,7 @@ export function Modal({
   onClose,
   children,
   wide = false,
+  xl = false,
 }: {
   open: boolean;
   title: string;
@@ -102,6 +103,7 @@ export function Modal({
   onClose: () => void;
   children: ReactNode;
   wide?: boolean;
+  xl?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -133,7 +135,7 @@ export function Modal({
         aria-labelledby="modal-title"
         className={clsx(
           'relative z-10 w-full rounded-xl border border-slate-200 bg-white shadow-xl',
-          wide ? 'max-w-2xl' : 'max-w-lg',
+          xl ? 'max-w-3xl' : wide ? 'max-w-2xl' : 'max-w-lg',
         )}
       >
         <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
@@ -153,7 +155,12 @@ export function Modal({
             Close
           </button>
         </div>
-        <div className="max-h-[min(70vh,560px)] overflow-y-auto px-5 py-4">
+        <div
+          className={clsx(
+            'overflow-y-auto px-5 py-4',
+            xl ? 'max-h-[min(80vh,720px)]' : 'max-h-[min(70vh,560px)]',
+          )}
+        >
           {children}
         </div>
       </div>

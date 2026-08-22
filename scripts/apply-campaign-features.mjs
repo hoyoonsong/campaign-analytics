@@ -77,6 +77,11 @@ const allFiles = [
   'supabase/migrations/0050_merge_and_contact.sql',
   'supabase/migrations/0051_merge_name_address.sql',
   'supabase/migrations/0052_duplicates_same_person.sql',
+  'supabase/migrations/0053_voter_map_snapshots.sql',
+  'supabase/migrations/0054_formhandler_supporter_roles.sql',
+  'supabase/migrations/0055_universe_driven_tags.sql',
+  'supabase/migrations/0056_fast_universe_tags.sql',
+  'supabase/migrations/0057_one_pass_universe_tags.sql',
 ];
 
 const applyFrom = process.env.APPLY_FROM || process.argv[2] || '0015';

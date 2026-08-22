@@ -11,6 +11,7 @@ const ROUTES: Record<string, () => Promise<{ default: Handler }>> = {
   import: () => import('./_handlers/voter/import.js'),
   'import-batches': () => import('./_handlers/voter/import-batches.js'),
   'map-points': () => import('./_handlers/voter/map-points.js'),
+  'map-snapshot': () => import('./_handlers/voter/map-snapshot.js'),
   nearby: () => import('./_handlers/voter/nearby.js'),
   profile: () => import('./_handlers/voter/profile.js'),
   search: () => import('./_handlers/voter/search.js'),

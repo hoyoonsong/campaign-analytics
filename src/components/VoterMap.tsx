@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   GeoJSON,
   MapContainer,
@@ -11,27 +11,47 @@ import L from 'leaflet';
 import type { GeoJsonObject, Feature, FeatureCollection } from 'geojson';
 import 'leaflet/dist/leaflet.css';
 import { COUNTY_CENTROIDS, IDAHO_COUNTIES } from '../lib/idahoCounties';
-import {
-  collapsePresencePins,
-  type PresencePin,
-  type RawPresencePin,
-} from '../lib/presencePins';
-import type { MapPoint } from '../lib/types';
+import { collapsePresencePins, type PresencePin, type RawPresencePin } from '../lib/presencePins';
+import type { CountyCoordPayload } from '../lib/mapCoordsCache';
+import { VoterClusterLayer } from './VoterClusterLayer';
 
 export type CampaignMapPin = RawPresencePin;
+
+type MapLayers = {
+  voters: boolean;
+  volunteers: boolean;
+  yardSigns: boolean;
+};
+
+const LAYER_KEY = 'analytics-map-layers-v1';
+
+function loadLayers(): MapLayers {
+  try {
+    const raw = localStorage.getItem(LAYER_KEY);
+    if (!raw) return { voters: true, volunteers: true, yardSigns: true };
+    const parsed = JSON.parse(raw) as Partial<MapLayers>;
+    return {
+      voters: parsed.voters !== false,
+      volunteers: parsed.volunteers !== false,
+      yardSigns: parsed.yardSigns !== false,
+    };
+  } catch {
+    return { voters: true, volunteers: true, yardSigns: true };
+  }
+}
+
+function saveLayers(layers: MapLayers) {
+  try {
+    localStorage.setItem(LAYER_KEY, JSON.stringify(layers));
+  } catch {
+    /* ignore */
+  }
+}
 
 const IDAHO_BOUNDS = L.latLngBounds(
   [41.9, -117.3],
   [49.1, -111.0],
 );
-
-const voterIcon = L.divIcon({
-  className: '',
-  html: `<span style="display:block;width:8px;height:8px;border-radius:9999px;background:#3b82f6;border:1.5px solid #fff;opacity:.85;box-shadow:0 1px 2px rgba(0,0,0,.25)"></span>`,
-  iconSize: [8, 8],
-  iconAnchor: [4, 4],
-  popupAnchor: [0, -4],
-});
 
 const yardIcon = L.divIcon({
   className: '',
@@ -110,21 +130,24 @@ export function VoterMap({
   onCountyClick,
   onClearFocus,
   onOpenProfile,
-  points,
+  coords,
   campaignGeo = [],
   truncated,
   totalVoters,
+  pinsLoading = false,
 }: {
   countyCounts: Record<string, number>;
   focusCounty: string | null;
   onCountyClick: (name: string) => void;
   onClearFocus?: () => void;
   onOpenProfile?: (id: number) => void;
-  points: MapPoint[];
+  coords: CountyCoordPayload | null;
   campaignGeo?: CampaignMapPin[];
   truncated: boolean;
   totalVoters: number;
+  pinsLoading?: boolean;
 }) {
+  const [layers, setLayers] = useState<MapLayers>(loadLayers);
   const countiesWithVoters = useMemo(
     () => Object.values(countyCounts).filter((n) => n > 0).length,
     [countyCounts],
@@ -136,24 +159,51 @@ export function VoterMap({
   );
 
   // Drop stray voter coords outside the county (they blow out the zoom).
-  const localPoints = useMemo(() => {
-    if (!focusCounty || !focusBounds) return [] as MapPoint[];
-    return points.filter((p) => inBounds(p.lat, p.lng, focusBounds));
-  }, [focusCounty, focusBounds, points]);
+  const voterCount = coords?.ids.length ?? 0;
 
   const localGeo = useMemo(() => {
     if (!focusCounty || !focusBounds) return [] as CampaignMapPin[];
     return campaignGeo.filter((g) => inBounds(g.lat, g.lng, focusBounds));
   }, [campaignGeo, focusBounds, focusCounty]);
 
-  /** One pin per person — both / YS / V. Multiple YS addresses collapse to one. */
-  const presencePins = useMemo(
-    () => collapsePresencePins(localGeo),
-    [localGeo],
-  );
+  const presencePins = useMemo(() => {
+    const all = collapsePresencePins(localGeo);
+    return all.flatMap((p) => {
+      if (p.kind === 'volunteer') return layers.volunteers ? [p] : [];
+      if (p.kind === 'yard_sign') return layers.yardSigns ? [p] : [];
+      if (layers.volunteers && layers.yardSigns) return [p];
+      if (layers.volunteers) return [{ ...p, kind: 'volunteer' as const }];
+      if (layers.yardSigns) return [{ ...p, kind: 'yard_sign' as const }];
+      return [];
+    });
+  }, [localGeo, layers]);
   const yardOnlyCount = presencePins.filter((p) => p.kind === 'yard_sign').length;
   const volOnlyCount = presencePins.filter((p) => p.kind === 'volunteer').length;
   const bothCount = presencePins.filter((p) => p.kind === 'both').length;
+
+  const toggleLayer = (key: keyof MapLayers) => {
+    setLayers((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      saveLayers(next);
+      return next;
+    });
+  };
+
+  const headerDetail = focusCounty
+    ? `${focusCounty} County` +
+      (pinsLoading && layers.voters
+        ? ' · plotting voters…'
+        : layers.voters
+          ? ` · ${voterCount.toLocaleString()} voter${voterCount === 1 ? '' : 's'}`
+          : '') +
+      (presencePins.length
+        ? ` · ${yardOnlyCount} yard signs · ${volOnlyCount} volunteers` +
+          (bothCount ? ` · ${bothCount} both` : '')
+        : '') +
+      (truncated ? ' (spread sample — snapshot unavailable)' : '')
+    : `${countiesWithVoters} of 44 counties with voters` +
+      (totalVoters ? ` · ${totalVoters.toLocaleString()} matching` : '') +
+      ' · click a county to zoom & show pins';
 
   return (
     <div className="card overflow-hidden">
@@ -161,18 +211,7 @@ export function VoterMap({
         <div>
           <h2 className="text-sm font-semibold text-slate-800">Idaho voter map</h2>
           <p className="text-xs text-slate-500">
-            {focusCounty
-              ? `${focusCounty} County · ${localPoints.length.toLocaleString()} voter pins` +
-                (presencePins.length
-                  ? ` · ${yardOnlyCount} yard signs · ${volOnlyCount} volunteers` +
-                    (bothCount ? ` · ${bothCount} both` : '')
-                  : '') +
-                (truncated ? ' (spread sample — not every voter)' : '')
-              : `${countiesWithVoters} of 44 counties with voters` +
-                (totalVoters
-                  ? ` · ${totalVoters.toLocaleString()} matching`
-                  : '') +
-                ' · click a county to zoom & show pins'}
+            {headerDetail}
           </p>
         </div>
         {focusCounty ? (
@@ -186,7 +225,7 @@ export function VoterMap({
         ) : null}
       </div>
 
-      <div className="h-[320px] sm:h-[440px] lg:h-[520px]">
+      <div className="relative h-[320px] sm:h-[440px] lg:h-[520px]">
         <MapContainer
           bounds={IDAHO_BOUNDS}
           scrollWheelZoom
@@ -199,7 +238,7 @@ export function VoterMap({
           <FocusMap
             focusCounty={focusCounty}
             countyBounds={focusBounds}
-            points={localPoints.map((p) => [p.lat, p.lng] as [number, number])}
+            truncated={truncated}
             presence={presencePins.map(
               (g) => [g.lat, g.lng] as [number, number],
             )}
@@ -211,38 +250,13 @@ export function VoterMap({
             onCountyClick={onCountyClick}
           />
 
-          {focusCounty &&
-            localPoints.map((p) => (
-              <Marker
-                key={`v-${p.id}`}
-                position={[p.lat, p.lng]}
-                icon={voterIcon}
-                zIndexOffset={0}
-              >
-                <Popup>
-                  <div className="space-y-1 text-sm">
-                    <p className="font-semibold text-slate-800">
-                      {[p.first_name, p.last_name].filter(Boolean).join(' ') ||
-                        'Unnamed voter'}
-                    </p>
-                    <p className="text-slate-600">
-                      {[p.address_line_1, p.city, p.zip]
-                        .filter(Boolean)
-                        .join(', ')}
-                    </p>
-                    {onOpenProfile && (
-                      <button
-                        type="button"
-                        className="mt-1 text-xs font-medium text-brand-600 hover:underline"
-                        onClick={() => onOpenProfile(p.id)}
-                      >
-                        View full profile →
-                      </button>
-                    )}
-                  </div>
-                </Popup>
-              </Marker>
-            ))}
+          {focusCounty && layers.voters ? (
+            <VoterClusterLayer
+              coords={coords}
+              bounds={focusBounds}
+              onOpenProfile={onOpenProfile}
+            />
+          ) : null}
 
           {focusCounty &&
             presencePins.map((g, i) => (
@@ -258,6 +272,12 @@ export function VoterMap({
               </Marker>
             ))}
         </MapContainer>
+        {focusCounty && pinsLoading && layers.voters ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-[500] flex items-center justify-center gap-2 bg-white/80 px-3 py-2 text-xs font-medium text-slate-700">
+            <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-brand-600" />
+            Plotting voters in {focusCounty}… yard signs and volunteers show first
+          </div>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap items-center gap-4 border-t border-slate-200 px-4 py-2.5 text-xs text-slate-600">
@@ -265,37 +285,72 @@ export function VoterMap({
           <CountyLegend />
         ) : (
           <>
-            <span className="flex items-center gap-1.5">
+            <LayerToggle
+              on={layers.voters}
+              onClick={() => toggleLayer('voters')}
+            >
               <span className="inline-block h-2 w-2 rounded-full bg-blue-500" />
               Voters
-            </span>
-            <span className="flex items-center gap-1.5">
+            </LayerToggle>
+            <LayerToggle
+              on={layers.yardSigns}
+              onClick={() => toggleLayer('yardSigns')}
+            >
               <span className="inline-flex h-4 w-4 items-center justify-center rounded-sm bg-amber-600 text-[9px] font-bold text-white">
                 YS
               </span>
               Yard signs
-            </span>
-            <span className="flex items-center gap-1.5">
+            </LayerToggle>
+            <LayerToggle
+              on={layers.volunteers}
+              onClick={() => toggleLayer('volunteers')}
+            >
               <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-teal-600 text-[9px] font-bold text-white">
                 V
               </span>
               Volunteers
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span
-                className="inline-flex h-4 w-5 items-center justify-center rounded-sm text-[8px] font-bold text-white"
-                style={{
-                  background: 'linear-gradient(135deg,#0d9488 50%,#d97706 50%)',
-                }}
-              >
-                V+YS
+            </LayerToggle>
+            {layers.volunteers && layers.yardSigns ? (
+              <span className="flex items-center gap-1.5 text-slate-500">
+                <span
+                  className="inline-flex h-4 w-5 items-center justify-center rounded-sm text-[8px] font-bold text-white"
+                  style={{
+                    background: 'linear-gradient(135deg,#0d9488 50%,#d97706 50%)',
+                  }}
+                >
+                  V+YS
+                </span>
+                Both
               </span>
-              Both
-            </span>
+            ) : null}
+            <span className="text-[11px] text-slate-400">Click to show/hide</span>
           </>
         )}
       </div>
     </div>
+  );
+}
+
+function LayerToggle({
+  on,
+  onClick,
+  children,
+}: {
+  on: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={`flex items-center gap-1.5 rounded-md px-1.5 py-0.5 ${
+        on ? 'bg-slate-100 text-slate-800' : 'text-slate-400 line-through'
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -345,12 +400,12 @@ function PresencePopup({ pin }: { pin: PresencePin }) {
 function FocusMap({
   focusCounty,
   countyBounds,
-  points,
+  truncated,
   presence,
 }: {
   focusCounty: string | null;
   countyBounds: L.LatLngBounds | null;
-  points: [number, number][];
+  truncated: boolean;
   presence: [number, number][];
 }) {
   const map = useMap();
@@ -364,27 +419,31 @@ function FocusMap({
       return;
     }
 
-    const pinKey = `${focusCounty}:${points.length}:${presence.length}`;
+    const pinKey = `${focusCounty}:${truncated ? 'sample' : 'all'}:${presence.length}`;
     if (lastKey.current === pinKey) return;
     lastKey.current = pinKey;
 
-    if (points.length === 0 && presence.length === 0) {
+    if (!truncated && countyBounds) {
+      map.fitBounds(countyBounds, { padding: [28, 28], maxZoom: 11 });
+      return;
+    }
+
+    if (presence.length === 0) {
       if (countyBounds) {
         map.fitBounds(countyBounds, { padding: [28, 28], maxZoom: 11 });
       }
       return;
     }
 
-    const all = [...points, ...presence];
-    if (all.length === 1) {
-      map.setView(all[0], 13);
+    if (presence.length === 1) {
+      map.setView(presence[0], 13);
       return;
     }
-    map.fitBounds(L.latLngBounds(all), {
+    map.fitBounds(L.latLngBounds(presence), {
       padding: [48, 48],
       maxZoom: 13,
     });
-  }, [map, focusCounty, countyBounds, points, presence]);
+  }, [map, focusCounty, countyBounds, truncated, presence]);
 
   return null;
 }

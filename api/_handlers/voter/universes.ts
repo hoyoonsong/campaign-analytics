@@ -14,6 +14,14 @@ async function recomputeTags(voter: {
   }
 }
 
+/** Do not block Save on a full-file tag rewrite. */
+function kickRecompute(voter: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rpc: (fn: string) => PromiseLike<{ error: any }>;
+}) {
+  void recomputeTags(voter);
+}
+
 function readTagFields(body: {
   supporter_tag?: string | null;
   tag_priority?: number | null;
@@ -40,6 +48,8 @@ function normalizeUniverse(row: Record<string, unknown>) {
     typeof filters._supporter_tag === 'string'
       ? String(filters._supporter_tag)
       : null;
+  const sourceFromFilters =
+    typeof filters._source === 'string' ? String(filters._source) : null;
   return {
     ...row,
     supporter_tag:
@@ -50,6 +60,8 @@ function normalizeUniverse(row: Record<string, unknown>) {
       (typeof filters._tag_priority === 'number'
         ? Number(filters._tag_priority)
         : 0),
+    source:
+      (typeof row.source === 'string' && row.source) || sourceFromFilters,
   };
 }
 
@@ -73,16 +85,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === 'POST') {
     const body = readBody<{
+      action?: string;
       name?: string;
       filters?: Record<string, unknown>;
       supporter_tag?: string | null;
       tag_priority?: number | null;
+      source?: string | null;
+      skip_recompute?: boolean;
     }>(req);
+    if (body.action === 'recompute_tags') {
+      await recomputeTags(ctx.voter);
+      return json(res, 200, { ok: true });
+    }
     const name = (body.name ?? '').trim();
     if (!name) return json(res, 400, { error: 'name is required' });
 
     const { tag, priority } = readTagFields(body);
-    const filters = withTagMeta(body.filters ?? {}, tag || null, priority);
+    const source = (body.source ?? '').trim() || null;
+    const filters = withTagMeta(body.filters ?? {}, tag || null, priority, source);
 
     // Prefer columns when migration applied; always embed tag meta in filters jsonb.
     const fullInsert = {
@@ -91,6 +111,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       created_by: ctx.user.id,
       supporter_tag: tag || null,
       tag_priority: priority,
+      source,
     };
 
     let { data, error } = await ctx.voter
@@ -99,7 +120,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .select('*')
       .single();
 
-    if (error && /supporter_tag|tag_priority/i.test(error.message)) {
+    if (error && /supporter_tag|tag_priority|\bsource\b/i.test(error.message)) {
       const fallback = await ctx.voter
         .from('saved_voter_universes')
         .insert({
@@ -114,7 +135,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (error) return json(res, 500, { error: error.message });
-    if (tag) await recomputeTags(ctx.voter);
+    if (tag && !body.skip_recompute) kickRecompute(ctx.voter);
     return json(res, 200, {
       universe: normalizeUniverse(data as Record<string, unknown>),
     });
@@ -127,6 +148,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       filters?: Record<string, unknown>;
       supporter_tag?: string | null;
       tag_priority?: number | null;
+      source?: string | null;
+      skip_recompute?: boolean;
     }>(req);
     const id = (body.id ?? '').trim();
     if (!id) return json(res, 400, { error: 'id is required' });
@@ -155,12 +178,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     const baseFilters = body.filters ?? existingFilters;
-    const filters = withTagMeta(baseFilters, tag || null, priority);
+    const source =
+      body.source !== undefined
+        ? String(body.source ?? '').trim() || null
+        : (typeof existing.source === 'string' && existing.source) ||
+          (typeof existingFilters._source === 'string'
+            ? String(existingFilters._source)
+            : null);
+    const filters = withTagMeta(baseFilters, tag || null, priority, source);
 
     const patchFull: Record<string, unknown> = { filters };
     if (body.name != null) patchFull.name = String(body.name).trim();
     patchFull.supporter_tag = tag || null;
     patchFull.tag_priority = priority;
+    patchFull.source = source;
 
     let { data, error } = await ctx.voter
       .from('saved_voter_universes')
@@ -170,7 +201,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .select('*')
       .maybeSingle();
 
-    if (error && /supporter_tag|tag_priority/i.test(error.message)) {
+    if (error && /supporter_tag|tag_priority|\bsource\b/i.test(error.message)) {
       const patchLean: Record<string, unknown> = { filters };
       if (body.name != null) patchLean.name = String(body.name).trim();
       const fallback = await ctx.voter
@@ -186,7 +217,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (error) return json(res, 500, { error: error.message });
     if (!data) return json(res, 404, { error: 'Not found' });
-    await recomputeTags(ctx.voter);
+    if (!body.skip_recompute) kickRecompute(ctx.voter);
     return json(res, 200, {
       universe: normalizeUniverse(data as Record<string, unknown>),
     });
@@ -204,7 +235,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .eq('created_by', ctx.user.id);
 
     if (error) return json(res, 500, { error: error.message });
-    await recomputeTags(ctx.voter);
+    kickRecompute(ctx.voter);
     return json(res, 200, { ok: true });
   }
 

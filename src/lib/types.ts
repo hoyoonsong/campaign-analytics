@@ -83,7 +83,12 @@ export type FilterAnyOfField =
   | 'top_main_topic'
   | 'county'
   | 'party'
-  | 'status';
+  | 'status'
+  | 'campaign_volunteer'
+  | 'campaign_donor'
+  | 'campaign_attendee'
+  | 'campaign_yard_sign'
+  | 'campaign_newsletter';
 
 export type FilterAnyOfRule =
   | { field: 'support_score'; values: number[] }
@@ -274,6 +279,7 @@ export interface SavedUniverse {
   filters: VoterFilters;
   supporter_tag?: string | null;
   tag_priority?: number;
+  source?: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -284,6 +290,10 @@ export interface CampaignSyncState {
   last_success_at: string | null;
   volunteer_count: number;
   yard_sign_count: number;
+  donor_count?: number;
+  attendee_count?: number;
+  newsletter_count?: number;
+  unmatched_supporter_count?: number;
   matched_voter_count: number;
   geo_point_count: number;
   last_error: string | null;

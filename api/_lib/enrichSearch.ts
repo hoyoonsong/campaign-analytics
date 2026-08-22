@@ -23,6 +23,11 @@ type AttrRow = {
   volunteer_interest: string | null;
   newsletter: string | null;
   attended_event: string | null;
+  is_campaign_volunteer?: boolean | null;
+  is_campaign_donor?: boolean | null;
+  is_campaign_attendee?: boolean | null;
+  is_campaign_yard_sign?: boolean | null;
+  is_campaign_newsletter?: boolean | null;
   email: string | null;
   phone: string | null;
   lat: number | null;
@@ -47,6 +52,14 @@ const BUILTIN_TAG_PRESETS: TagUniverse[] = [
       { field: 'alignment_label', values: ['Positive'] },
       { field: 'support_score', values: [1, 2] },
       { field: 'convos_candidate_support', values: ['yes'] },
+      { field: 'volunteer_interest', values: ['Yes'] },
+      { field: 'attended_event', values: ['Yes'] },
+      { field: 'newsletter', values: ['Yes'] },
+      { field: 'campaign_volunteer', values: ['Yes'] },
+      { field: 'campaign_donor', values: ['Yes'] },
+      { field: 'campaign_attendee', values: ['Yes'] },
+      { field: 'campaign_yard_sign', values: ['Yes'] },
+      { field: 'campaign_newsletter', values: ['Yes'] },
     ],
   },
   {
@@ -80,6 +93,12 @@ function lower(s: string | null | undefined): string {
   return (s ?? '').trim().toLowerCase();
 }
 
+function wantsYes(values: Array<string | number>): boolean {
+  return values.some((v) =>
+    ['yes', 'y', 'true', '1'].includes(lower(String(v))),
+  );
+}
+
 function matchesAnyOf(row: AttrRow, rules: AnyOfRule[]): boolean {
   if (!rules.length) return false;
   for (const rule of rules) {
@@ -93,6 +112,22 @@ function matchesAnyOf(row: AttrRow, rules: AnyOfRule[]): boolean {
         return true;
       }
       continue;
+    }
+
+    if (field === 'campaign_volunteer' && row.is_campaign_volunteer && wantsYes(values)) {
+      return true;
+    }
+    if (field === 'campaign_donor' && row.is_campaign_donor && wantsYes(values)) {
+      return true;
+    }
+    if (field === 'campaign_attendee' && row.is_campaign_attendee && wantsYes(values)) {
+      return true;
+    }
+    if (field === 'campaign_yard_sign' && row.is_campaign_yard_sign && wantsYes(values)) {
+      return true;
+    }
+    if (field === 'campaign_newsletter' && row.is_campaign_newsletter && wantsYes(values)) {
+      return true;
     }
 
     const want = values.map((v) => lower(String(v)));
@@ -310,7 +345,7 @@ export async function enrichSearchRows(
       ? voter
           .from('voters')
           .select(
-            'id, yard_sign, donated, alignment_label, support_score, convos_candidate_support, convos_poll_question, volunteer_interest, newsletter, attended_event, email, phone, lat, lng, address_line_1, city, zip, state, county, supporter_tag',
+            'id, yard_sign, donated, alignment_label, support_score, convos_candidate_support, convos_poll_question, volunteer_interest, newsletter, attended_event, is_campaign_volunteer, is_campaign_donor, is_campaign_attendee, is_campaign_yard_sign, is_campaign_newsletter, email, phone, lat, lng, address_line_1, city, zip, state, county, supporter_tag',
           )
           .in('id', ids)
       : Promise.resolve({ data: [] as unknown[] }),
@@ -455,6 +490,7 @@ export function withTagMeta(
   filters: Record<string, unknown>,
   tag: string | null | undefined,
   priority: number | null | undefined,
+  source?: string | null,
 ): Record<string, unknown> {
   const out = { ...filters };
   const t = tag?.trim();
@@ -465,5 +501,8 @@ export function withTagMeta(
     delete out._supporter_tag;
     delete out._tag_priority;
   }
+  const src = source?.trim();
+  if (src) out._source = src;
+  else delete out._source;
   return out;
 }

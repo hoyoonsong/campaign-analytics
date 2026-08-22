@@ -35,18 +35,45 @@ export function clearPersistedSearchFilters() {
   }
 }
 
+/** One-shot: open the Filters drawer so chart clicks can search county/city names. */
+export const SEARCH_OPEN_FILTERS_KEY = 'voter_search_open_filters';
+
+/** Pre-fill Filters “Find a filter…” so the matching section is visible. */
+export const SEARCH_FILTER_FIND_KEY = 'voter_search_filter_find';
+
+export type SearchHandoffOpts = {
+  /** Filter-panel search text (e.g. "petition", "party", "county"). */
+  find?: string;
+};
+
+export type SearchLocationState = {
+  filters: VoterFilters;
+  openFilters?: boolean;
+  find?: string;
+};
+
 /** Stash filters and open Search with that universe. */
 export function navigateToSearch(
   navigate: NavigateFunction,
   patch: Partial<VoterFilters>,
+  opts?: SearchHandoffOpts,
 ) {
   const filters: VoterFilters = { ...emptyFilters(), ...patch };
+  const find = opts?.find?.trim() || '';
   try {
     sessionStorage.setItem(SEARCH_FILTERS_HANDOFF_KEY, JSON.stringify(filters));
+    sessionStorage.setItem(SEARCH_OPEN_FILTERS_KEY, '1');
+    if (find) sessionStorage.setItem(SEARCH_FILTER_FIND_KEY, find);
+    else sessionStorage.removeItem(SEARCH_FILTER_FIND_KEY);
   } catch {
     /* ignore */
   }
-  navigate('/search');
+  const state: SearchLocationState = {
+    filters,
+    openFilters: true,
+    find: find || undefined,
+  };
+  navigate('/search', { state });
 }
 
 /** Age chart bucket → inclusive age_min / age_max (null max = no upper bound). */

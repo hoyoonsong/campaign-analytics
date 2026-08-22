@@ -1,11 +1,13 @@
-import type { FilterAnyOfRule } from './types';
+import type { FilterAnyOfField, FilterAnyOfRule, SavedUniverse, VoterFilters } from './types';
 
-/** Organizer-style OR rules for Supporter tags (from campaign communities). */
+export type UniverseSource = 'preset' | 'custom';
+
 export type SupporterTagPreset = {
   name: string;
   description: string;
   supporter_tag: string;
   tag_priority: number;
+  source: UniverseSource;
   any_of: FilterAnyOfRule[];
 };
 
@@ -17,12 +19,30 @@ export const SUPPORT_SCORE_LABELS: Record<number, string> = {
   5: '5 — Strong Oppose',
 };
 
-/** Achilles Vote (supporters) — OR across these conditions. */
+export const FORMHANDLER_ANY_OF_FIELDS: FilterAnyOfField[] = [
+  'campaign_volunteer',
+  'campaign_donor',
+  'campaign_attendee',
+  'campaign_yard_sign',
+  'campaign_newsletter',
+];
+
+export const FORMHANDLER_ANY_OF: FilterAnyOfRule[] = [
+  { field: 'campaign_volunteer', values: ['Yes'] },
+  { field: 'campaign_donor', values: ['Yes'] },
+  { field: 'campaign_attendee', values: ['Yes'] },
+  { field: 'campaign_yard_sign', values: ['Yes'] },
+  { field: 'campaign_newsletter', values: ['Yes'] },
+];
+
+/** Achilles Vote (supporters) — OR across voter-file + FormHandler signals. */
 export const PRESET_SUPPORTER: SupporterTagPreset = {
   name: 'Achilles Vote',
-  description: 'Pretty confident we have their votes',
+  description:
+    'All possible supporters: FormHandler volunteers, donors, attendees, yard signs, newsletters, plus yard sign / donated / alignment / support score / convos',
   supporter_tag: 'supporter',
   tag_priority: 30,
+  source: 'preset',
   any_of: [
     { field: 'yard_sign', values: ['Yes', 'Delivered'] },
     { field: 'donated', values: ['Yes'] },
@@ -32,6 +52,7 @@ export const PRESET_SUPPORTER: SupporterTagPreset = {
     { field: 'volunteer_interest', values: ['Yes'] },
     { field: 'attended_event', values: ['Yes'] },
     { field: 'newsletter', values: ['Yes'] },
+    ...FORMHANDLER_ANY_OF,
   ],
 };
 
@@ -41,6 +62,7 @@ export const PRESET_OPPOSED: SupporterTagPreset = {
   description: 'Opposed / negative support signals',
   supporter_tag: 'opposed',
   tag_priority: 20,
+  source: 'preset',
   any_of: [
     { field: 'convos_candidate_support', values: ['no'] },
     { field: 'alignment_label', values: ['Negative'] },
@@ -54,6 +76,7 @@ export const PRESET_MAYBE: SupporterTagPreset = {
   description: 'Neutral / undecided signals',
   supporter_tag: 'maybe',
   tag_priority: 10,
+  source: 'preset',
   any_of: [
     { field: 'alignment_label', values: ['Neutral'] },
     { field: 'convos_candidate_support', values: ['maybe'] },
@@ -67,6 +90,25 @@ export const SUPPORTER_TAG_PRESETS: SupporterTagPreset[] = [
   PRESET_OPPOSED,
   PRESET_MAYBE,
 ];
+
+export function universeHasFormHandlerRules(filters: VoterFilters | undefined): boolean {
+  return (filters?.any_of ?? []).some((r) =>
+    FORMHANDLER_ANY_OF_FIELDS.includes(r.field as FilterAnyOfField),
+  );
+}
+
+export function universeOrigin(u: SavedUniverse): UniverseSource {
+  const fromCol = (u.source ?? '').trim().toLowerCase();
+  if (fromCol === 'preset' || fromCol === 'custom') return fromCol;
+  const fromFilters = String(
+    (u.filters as { _source?: unknown } | undefined)?._source ?? '',
+  )
+    .trim()
+    .toLowerCase();
+  if (fromFilters === 'preset' || fromFilters === 'custom') return fromFilters;
+  if (SUPPORTER_TAG_PRESETS.some((p) => p.name === u.name)) return 'preset';
+  return 'custom';
+}
 
 export function summarizeAnyOfRule(rule: FilterAnyOfRule): string {
   if (rule.field === 'support_score') {
@@ -87,6 +129,11 @@ export function summarizeAnyOfRule(rule: FilterAnyOfRule): string {
     newsletter: 'Newsletter',
     attended_event: 'Attended event',
     top_main_topic: 'Top topic',
+    campaign_volunteer: 'FormHandler volunteer',
+    campaign_donor: 'FormHandler donor',
+    campaign_attendee: 'FormHandler event attendee',
+    campaign_yard_sign: 'FormHandler yard sign',
+    campaign_newsletter: 'FormHandler newsletter',
   };
   return `${labels[rule.field] ?? rule.field} is ${vals}`;
 }

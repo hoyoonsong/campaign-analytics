@@ -28,9 +28,11 @@ import {
   fetchAnalytics,
   fetchCampaignSyncState,
   fetchFilterOptions,
+  fetchMapCampaignGeo,
   fetchMapPoints,
   syncCampaignIndexes,
 } from "../lib/api";
+import { loadCountyMapCoords } from "../lib/mapCoordsCache";
 import { downloadVotersCsv, sleep } from "../lib/exportVotersCsv";
 import { emptyFilters, summarizeFilters } from "../lib/filters";
 import { normalizeCountyName } from "../lib/idahoCounties";
@@ -52,9 +54,9 @@ import type {
   AnalyticsSummary,
   CampaignSyncState,
   CountBucket,
-  MapPoint,
   VoterFilters,
 } from "../lib/types";
+import type { CountyCoordPayload } from "../lib/mapCoordsCache";
 
 const CHART_BLUE = "#1d4ed8";
 const CHART_AMBER = "#b45309";
@@ -76,7 +78,7 @@ export default function Analytics() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
-  const [points, setPoints] = useState<MapPoint[]>([]);
+  const [coords, setCoords] = useState<CountyCoordPayload | null>(null);
   const [campaignGeo, setCampaignGeo] = useState<
     Array<{
       kind: "volunteer" | "yard_sign";
@@ -205,7 +207,7 @@ export default function Analytics() {
   }, [filters, reloadToken]);
 
   useEffect(() => {
-    setPoints([]);
+    setCoords(null);
     setCampaignGeo([]);
     setTruncated(false);
     setMapError(null);
@@ -214,19 +216,59 @@ export default function Analytics() {
     let active = true;
     setPinsLoading(true);
     const t = setTimeout(() => {
-      void fetchMapPoints({ ...emptyFilters(), county: [focusCounty] }, 2500)
-        .then((data) => {
-          if (!active) return;
-          setPoints(data.points ?? []);
-          setTruncated(!!data.truncated);
-          setCampaignGeo(data.campaign_geo ?? []);
+      void fetchMapCampaignGeo()
+        .then((geo) => {
+          if (active) setCampaignGeo(geo.campaign_geo ?? []);
         })
-        .catch((err: Error) => {
-          if (active) setMapError(err.message);
-        })
-        .finally(() => {
-          if (active) setPinsLoading(false);
+        .catch(() => {
+          /* voter snapshot may still succeed */
         });
+
+      void (async () => {
+        try {
+          const packed = await loadCountyMapCoords(focusCounty);
+          if (!active) return;
+          setCoords(packed);
+          setTruncated(false);
+        } catch (err) {
+          try {
+            const data = await fetchMapPoints(
+              { ...emptyFilters(), county: [focusCounty] },
+              2500,
+            );
+            if (!active) return;
+            const pts = data.points ?? [];
+            setCoords({
+              version: 0,
+              ids: pts.map((p) => p.id),
+              lat: pts.map((p) => p.lat),
+              lng: pts.map((p) => p.lng),
+            });
+            setTruncated(!!data.truncated || pts.length >= 2500);
+            if (data.campaign_geo?.length) {
+              setCampaignGeo(data.campaign_geo);
+            }
+            const msg = err instanceof Error ? err.message : "";
+            if (!/not installed|0053|schema cache/i.test(msg)) {
+              setMapError(
+                msg || "Could not load the full county map; showing a sample.",
+              );
+            }
+          } catch (fallbackErr: unknown) {
+            if (active) {
+              setMapError(
+                fallbackErr instanceof Error
+                  ? fallbackErr.message
+                  : err instanceof Error
+                    ? err.message
+                    : "Map failed",
+              );
+            }
+          }
+        } finally {
+          if (active) setPinsLoading(false);
+        }
+      })();
     }, 150);
     return () => {
       active = false;
@@ -276,8 +318,15 @@ export default function Analytics() {
       .reduce((s, c) => s + (Number(c.count) || 0), 0);
   }, [chartSummary, petitionUnits]);
 
-  const goSearch = (patch: Partial<VoterFilters>) => {
-    navigateToSearch(navigate, { ...filters, ...patch });
+  const goSearch = (patch: Partial<VoterFilters>, find?: string) => {
+    navigateToSearch(navigate, { ...filters, ...patch }, { find });
+  };
+
+  const goSearchPetition = (slugs: string[], find = "petition") => {
+    const { signed: _s, signed_min: _m, signed_min_of: _o, ...rest } = filters;
+    navigateToSearch(navigate, { ...rest, ...filtersForSignedAny(slugs) }, {
+      find,
+    });
   };
 
   const exportSignedAny = async (
@@ -396,14 +445,15 @@ export default function Analytics() {
   );
 
   const openCountyPins = (name: string) => {
-    setPoints([]);
+    setCoords(null);
     setCampaignGeo([]);
+    setTruncated(false);
     setFocusCounty(name);
   };
 
   const clearMapFocus = () => {
     setFocusCounty(null);
-    setPoints([]);
+    setCoords(null);
     setCampaignGeo([]);
     setTruncated(false);
   };
@@ -412,7 +462,7 @@ export default function Analytics() {
     <div>
       <PageHeader
         title="Analytics"
-        description="Click a chart or stat to open that list in Search. Map clicks stay on the map."
+        description="Click a chart or stat to open that list in Search (Filters opens so you can search county and city names). Map clicks stay on the map."
         actions={
           <div className="flex flex-wrap gap-2">
             <button
@@ -531,7 +581,7 @@ export default function Analytics() {
               <StatCard
                 label="Matching voters"
                 value={summary.total}
-                onClick={() => goSearch({})}
+                onClick={() => goSearch({}, "tags")}
               />
               <StatCard
                 label="Supporters"
@@ -540,7 +590,7 @@ export default function Analytics() {
                   Number(summary.supporters ?? 0),
                   interestUniverse,
                 )}
-                onClick={() => goSearch({ supporter_tag: ["supporter"] })}
+                onClick={() => goSearch({ supporter_tag: ["supporter"] }, "supporter")}
               />
               <StatCard
                 label="Maybe"
@@ -549,7 +599,7 @@ export default function Analytics() {
                   Number(summary.maybes ?? 0),
                   interestUniverse,
                 )}
-                onClick={() => goSearch({ supporter_tag: ["maybe"] })}
+                onClick={() => goSearch({ supporter_tag: ["maybe"] }, "maybe")}
               />
               <StatCard
                 label="Opposed"
@@ -558,7 +608,7 @@ export default function Analytics() {
                   Number(summary.opposed ?? 0),
                   interestUniverse,
                 )}
-                onClick={() => goSearch({ supporter_tag: ["opposed"] })}
+                onClick={() => goSearch({ supporter_tag: ["opposed"] }, "opposed")}
               />
             </div>
 
@@ -610,9 +660,7 @@ export default function Analytics() {
                   combos={chartSummary?.petition_combos}
                   countsBySlug={petitionCountsBySlug}
                   totalVoters={summary.total}
-                  onSelectSlugs={(slugs) =>
-                    goSearch(filtersForSignedAny(slugs))
-                  }
+                  onSelectSlugs={(slugs) => goSearchPetition(slugs)}
                 />
               </section>
 
@@ -627,10 +675,13 @@ export default function Analytics() {
                         type="button"
                         className="rounded-md bg-slate-50 px-2 py-1 text-left hover:bg-slate-100"
                         onClick={() =>
-                          goSearch({
-                            signed: [],
-                            ...superSignerFilters(selectedPetitions),
-                          })
+                          goSearch(
+                            {
+                              signed: [],
+                              ...superSignerFilters(selectedPetitions),
+                            },
+                            "petition",
+                          )
                         }
                       >
                         <p className="text-[10px] text-slate-500">
@@ -658,6 +709,7 @@ export default function Analytics() {
                     navigateToSearch(
                       navigate,
                       mergeFiltersWithUnitCombo(filters, mask, petitionUnits),
+                      { find: "petition" },
                     )
                   }
                   onSelectPetitionExclusive={(p) =>
@@ -668,13 +720,17 @@ export default function Analytics() {
                         2 ** p.bit_index,
                         selectedPetitions,
                       ),
+                      { find: p.label || "petition" },
                     )
                   }
                   onSelectSuperSigners={() =>
-                    goSearch({
-                      signed: [],
-                      ...superSignerFilters(selectedPetitions),
-                    })
+                    goSearch(
+                      {
+                        signed: [],
+                        ...superSignerFilters(selectedPetitions),
+                      },
+                      "petition",
+                    )
                   }
                 />
               </section>
@@ -706,10 +762,8 @@ export default function Analytics() {
                     radius={[0, 4, 4, 0]}
                     cursor="pointer"
                     onClick={(data) => {
-                      const name =
-                        (data as { name?: string; payload?: { name?: string } })
-                          ?.payload?.name ?? (data as { name?: string })?.name;
-                      if (name) goSearch({ party: [name] });
+                      const name = chartLabel(data);
+                      if (name) goSearch({ party: [name] }, "party");
                     }}
                   />
                 </BarChart>
@@ -734,12 +788,10 @@ export default function Analytics() {
                     radius={[4, 4, 0, 0]}
                     cursor="pointer"
                     onClick={(data) => {
-                      const name =
-                        (data as { name?: string; payload?: { name?: string } })
-                          ?.payload?.name ?? (data as { name?: string })?.name;
+                      const name = chartLabel(data);
                       if (!name) return;
                       const range = ageBandToRange(name);
-                      if (range) goSearch(range);
+                      if (range) goSearch(range, "age");
                     }}
                   />
                 </BarChart>
@@ -773,10 +825,8 @@ export default function Analytics() {
                     radius={[0, 4, 4, 0]}
                     cursor="pointer"
                     onClick={(data) => {
-                      const name =
-                        (data as { name?: string; payload?: { name?: string } })
-                          ?.payload?.name ?? (data as { name?: string })?.name;
-                      if (name) goSearch({ county: [name] });
+                      const name = chartLabel(data);
+                      if (name) goSearch({ county: [name] }, "county");
                     }}
                   >
                     {countyBars.map((row) => (
@@ -791,15 +841,11 @@ export default function Analytics() {
               <div>
                 <h3 className="text-sm font-semibold text-slate-800">Map</h3>
                 <p className="text-xs text-slate-500">
-                  Click a county to zoom and show pins. Chart clicks open Search
-                  — map stays here.
+                  Click a county to plot every geocoded voter. Use the legend to
+                  hide voters, yard signs, or volunteers. Chart clicks open
+                  Search with Filters — map stays here.
                 </p>
               </div>
-              {pinsLoading && focusCounty && (
-                <p className="text-xs text-slate-500">
-                  Loading pins for {focusCounty}…
-                </p>
-              )}
               {mapError && focusCounty ? (
                 <Alert variant="error">{mapError}</Alert>
               ) : null}
@@ -809,10 +855,11 @@ export default function Analytics() {
                 onCountyClick={openCountyPins}
                 onClearFocus={clearMapFocus}
                 onOpenProfile={setProfileId}
-                points={points}
+                coords={coords}
                 campaignGeo={campaignGeo}
                 truncated={truncated}
                 totalVoters={summary.total}
+                pinsLoading={pinsLoading}
               />
             </section>
           </>
@@ -839,6 +886,22 @@ function orderBuckets(rows: CountBucket[], order: string[]) {
 function pctOfInterest(part: number, taggedTotal: number) {
   if (!taggedTotal) return "0% of tagged";
   return `${((100 * part) / taggedTotal).toFixed(1)}% of tagged`;
+}
+
+function chartLabel(data: unknown): string | undefined {
+  if (data == null || typeof data !== "object") return undefined;
+  const rec = data as {
+    name?: unknown;
+    payload?: { name?: unknown };
+    tooltipPayload?: Array<{ payload?: { name?: unknown } }>;
+  };
+  if (typeof rec.name === "string" && rec.name) return rec.name;
+  if (typeof rec.payload?.name === "string" && rec.payload.name) {
+    return rec.payload.name;
+  }
+  const tip = rec.tooltipPayload?.[0]?.payload?.name;
+  if (typeof tip === "string" && tip) return tip;
+  return undefined;
 }
 
 function StatCard({

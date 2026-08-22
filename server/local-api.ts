@@ -57,6 +57,7 @@ const ROUTES: [string, string][] = [
   ['/api/voter/usage', '_handlers/voter/usage.ts'],
   ['/api/voter/filter-options', '_handlers/voter/filter-options.ts'],
   ['/api/voter/map-points', '_handlers/voter/map-points.ts'],
+  ['/api/voter/map-snapshot', '_handlers/voter/map-snapshot.ts'],
   ['/api/voter/universes', '_handlers/voter/universes.ts'],
   ['/api/voter/petitions', '_handlers/voter/petitions.ts'],
   ['/api/voter/tracking-polls', '_handlers/voter/tracking-polls.ts'],

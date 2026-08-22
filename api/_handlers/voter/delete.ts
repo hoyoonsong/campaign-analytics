@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
+import { invalidateMapSnapshots } from '../../_lib/mapSnapshots.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
@@ -30,6 +31,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const result = (data ?? {}) as { deleted?: number; error?: string };
   if (result.error) {
     return json(res, 400, { error: result.error });
+  }
+
+  if ((result.deleted ?? 0) > 0) {
+    await invalidateMapSnapshots(ctx.voter);
   }
 
   return json(res, 200, { deleted: result.deleted ?? 0 });

@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { json, requireCampaignUser } from '../../_lib/auth.js';
+import { invalidateMapSnapshots } from '../../_lib/mapSnapshots.js';
 
 function isAdmin(role: string) {
   return role === 'admin';
@@ -26,8 +27,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     typeof data === 'string'
       ? (JSON.parse(data) as Record<string, unknown>)
       : ((data ?? {}) as Record<string, unknown>);
+  const merged = Number(raw.merged) || 0;
+  if (merged > 0) {
+    await invalidateMapSnapshots(ctx.voter);
+  }
+
   return json(res, 200, {
-    merged: Number(raw.merged) || 0,
+    merged,
     skipped: Number(raw.skipped) || 0,
     found: Number(raw.found) || 0,
   });
