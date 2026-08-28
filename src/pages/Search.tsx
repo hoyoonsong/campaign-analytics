@@ -22,10 +22,11 @@ import { useAuth } from "../context/AuthContext";
 import { logActivity } from "../lib/activityLog";
 import {
   downloadVotersCsv,
+  MAX_EXPORT_ROWS,
   sleep,
   VOTER_EXPORT_COLS,
 } from "../lib/exportVotersCsv";
-import { emptyFilters, summarizeFilters } from "../lib/filters";
+import { emptyFilters, filtersActive, summarizeFilters } from "../lib/filters";
 import {
   SEARCH_FILTERS_HANDOFF_KEY,
   SEARCH_FILTER_FIND_KEY,
@@ -243,10 +244,35 @@ export default function Search() {
   };
 
   const handleExport = async () => {
+    const unfiltered = !filtersActive(filters);
+    if (unfiltered && !isAdmin) {
+      setError(
+        "Filter the list before exporting. Downloading the whole voter file takes the database down.",
+      );
+      return;
+    }
+    if (q.trim()) {
+      const ok = window.confirm(
+        `CSV export uses filters only — it does not use the search box (“${q.trim()}”). Continue exporting the filtered list?`,
+      );
+      if (!ok) return;
+    }
+    if (unfiltered && isAdmin) {
+      const ok = window.confirm(
+        `This will export up to ${MAX_EXPORT_ROWS.toLocaleString()} of ${total.toLocaleString()} voters with no filters.\n\nA full-file download is what crashed the voter database. Continue?`,
+      );
+      if (!ok) return;
+    } else if (total > 3000) {
+      const ok = window.confirm(
+        `This will download about ${total.toLocaleString()} rows (capped at ${MAX_EXPORT_ROWS.toLocaleString()}). Large exports can slow the voter database. Continue?`,
+      );
+      if (!ok) return;
+    }
     setExporting(true);
     setError(null);
+    setNotice(null);
     try {
-      const count = await downloadVotersCsv({
+      const { count, truncated } = await downloadVotersCsv({
         filters,
         filename: `voters-export-${new Date().toISOString().slice(0, 10)}.csv`,
         columns: VOTER_EXPORT_COLS,
@@ -254,8 +280,13 @@ export default function Search() {
       void logActivity({
         action: "export",
         entityType: "voter",
-        metadata: { label: "CSV export", count },
+        metadata: { label: "CSV export", count, truncated },
       });
+      if (truncated) {
+        setNotice(
+          `Export stopped at ${MAX_EXPORT_ROWS.toLocaleString()} rows to protect the database. Add filters for a smaller list.`,
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Export failed");
     } finally {
@@ -273,7 +304,7 @@ export default function Search() {
     try {
       const { signed: _s, signed_min: _m, signed_min_of: _o, ...rest } =
         filters;
-      const count = await downloadVotersCsv({
+      const { count } = await downloadVotersCsv({
         filters: { ...rest, ...filtersForSignedAny(slugs) },
         filename,
       });
@@ -294,7 +325,7 @@ export default function Search() {
     setError(null);
     try {
       const merged = mergeFiltersWithCombo(filters, mask, selectedPetitions);
-      const count = await downloadVotersCsv({
+      const { count } = await downloadVotersCsv({
         filters: merged,
         filename: comboExportFilename(mask, selectedPetitions),
       });
@@ -311,13 +342,19 @@ export default function Search() {
   };
 
   const exportAllCombos = async () => {
+    const rowsToExport = [...(petitionCombos ?? [])]
+      .map((c) => ({ mask: Number(c.mask), count: Number(c.count) || 0 }))
+      .filter((c) => c.count > 0 && c.mask !== 0);
+    const rowTotal = rowsToExport.reduce((s, c) => s + c.count, 0);
+    if (rowsToExport.length === 0) return;
+    const ok = window.confirm(
+      `This will download ${rowsToExport.length} CSV files (~${rowTotal.toLocaleString()} rows, each file capped at ${MAX_EXPORT_ROWS.toLocaleString()}).\n\nThat many sequential exports can slow the voter database. Continue?`,
+    );
+    if (!ok) return;
     setExportingAll(true);
     setError(null);
     try {
       let totalExported = 0;
-      const rowsToExport = [...(petitionCombos ?? [])]
-        .map((c) => ({ mask: Number(c.mask), count: Number(c.count) || 0 }))
-        .filter((c) => c.count > 0 && c.mask !== 0);
       for (const combo of rowsToExport) {
         setExportingKey(combo.mask);
         const merged = mergeFiltersWithCombo(
@@ -325,12 +362,12 @@ export default function Search() {
           combo.mask,
           selectedPetitions,
         );
-        const count = await downloadVotersCsv({
+        const { count } = await downloadVotersCsv({
           filters: merged,
           filename: comboExportFilename(combo.mask, selectedPetitions),
         });
         totalExported += count;
-        await sleep(400);
+        await sleep(800);
       }
       void logActivity({
         action: "export",

@@ -10,6 +10,11 @@ import {
   YAxis,
 } from 'recharts';
 import { ImportMappingModal } from '../components/ImportMappingModal';
+import { NewTrackingPollModal } from '../components/NewTrackingPollModal';
+import {
+  TrackingPollAssignModal,
+  type FilePollAssignment,
+} from '../components/TrackingPollAssignModal';
 import { TrackingPollTransitions } from '../components/TrackingPollTransitions';
 import { Alert, PageHeader, Spinner } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
@@ -28,6 +33,7 @@ import {
   formatPollDate,
   inferPollDateFromFilename,
   pollDateTargets,
+  pollDisplayName,
   sha256Hex,
   stackedPreference,
   trackingOverview,
@@ -35,6 +41,27 @@ import {
   type TrackingPoll,
   type TrackingPollResponse,
 } from '../lib/trackingPoll';
+
+type ImportJob = {
+  filename: string;
+  hash: string | null;
+  headers: string[];
+  rows: string[][];
+  inferredDate: string | null;
+  assignment?: FilePollAssignment;
+  assignedDate?: string | null;
+  mapping?: Record<string, string>;
+};
+
+function sameHeaders(a: string[], b: string[]) {
+  return a.length === b.length && a.every((h, i) => h === b[i]);
+}
+
+function mergePolls(current: TrackingPoll[], added: TrackingPoll[]) {
+  const byId = new Map(current.map((p) => [p.id, p]));
+  for (const poll of added) byId.set(poll.id, poll);
+  return [...byId.values()].sort((a, b) => a.poll_date.localeCompare(b.poll_date));
+}
 
 type Panel = 'all' | 'repeats' | 'flipped';
 
@@ -78,14 +105,12 @@ export default function TrackingPolls() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [importPhase, setImportPhase] = useState<
-    'idle' | 'mapping' | 'importing' | 'done'
+    'idle' | 'assign' | 'mapping' | 'importing' | 'done'
   >('idle');
-  const [importFile, setImportFile] = useState<{
-    filename: string;
-    hash: string | null;
-    headers: string[];
-    rows: string[][];
-  } | null>(null);
+  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
+  const [mappingIndex, setMappingIndex] = useState(0);
+  const [newPollOpen, setNewPollOpen] = useState(false);
+  const [newPollDate, setNewPollDate] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState({
     done: 0,
     total: 0,
@@ -171,41 +196,135 @@ export default function TrackingPolls() {
     : 0;
   const missingAnswers =
     importedVoters > headline.unique ? importedVoters - headline.unique : 0;
+  const answersByPoll = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const r of responses) {
+      counts.set(r.poll_id, (counts.get(r.poll_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [responses]);
+  const mappingJob = importPhase === 'mapping' ? importJobs[mappingIndex] : null;
+  const mappingPoll =
+    typeof mappingJob?.assignment === 'number'
+      ? polls.find((p) => p.id === mappingJob.assignment) ?? null
+      : null;
+  const mappingReuseCount = mappingJob
+    ? importJobs.filter(
+        (job, i) =>
+          i > mappingIndex &&
+          !job.mapping &&
+          sameHeaders(mappingJob.headers, job.headers),
+      ).length
+    : 0;
 
-  const pickImportFile = async (file: File) => {
+  const resetImport = () => {
+    setImportPhase('idle');
+    setImportJobs([]);
+    setMappingIndex(0);
+    setImportResult(null);
+  };
+
+  const pickImportFiles = async (fileList: File[]) => {
     setError(null);
-    const text = await file.text();
-    const parsed = parseCsv(text);
-    if (parsed.headers.length === 0) {
-      setError('Could not detect CSV headers.');
+    const jobs: ImportJob[] = [];
+    for (const file of fileList) {
+      const text = await file.text();
+      const parsed = parseCsv(text);
+      if (parsed.headers.length === 0) {
+        setError(`Could not detect CSV headers in ${file.name}.`);
+        return;
+      }
+      jobs.push({
+        filename: file.name,
+        hash: await sha256Hex(text),
+        headers: parsed.headers,
+        rows: parsed.rows,
+        inferredDate: inferPollDateFromFilename(file.name),
+      });
+    }
+    if (jobs.length === 0) return;
+    setImportJobs(jobs);
+    setMappingIndex(0);
+    setImportPhase('assign');
+  };
+
+  const startMapping = (jobs: ImportJob[]) => {
+    const nextIndex = jobs.findIndex((job) => !job.mapping);
+    if (nextIndex === -1) {
+      void runPollImport(jobs);
       return;
     }
-    setImportFile({
-      filename: file.name,
-      hash: await sha256Hex(text),
-      headers: parsed.headers,
-      rows: parsed.rows,
-    });
+    setImportJobs(jobs);
+    setMappingIndex(nextIndex);
     setImportPhase('mapping');
   };
 
-  const runPollImport = async (mapping: Record<string, string>) => {
-    if (!importFile) return;
-    setError(null);
+  const applyMapping = (mapping: Record<string, string>) => {
+    const current = importJobs[mappingIndex];
+    if (!current) return;
+    const next = importJobs.map((job, i) => {
+      if (i === mappingIndex) return { ...job, mapping };
+      if (
+        i > mappingIndex &&
+        !job.mapping &&
+        sameHeaders(current.headers, job.headers)
+      ) {
+        return { ...job, mapping };
+      }
+      return job;
+    });
+    startMapping(next);
+  };
 
-    const mapped = rowsToObjects(importFile.headers, importFile.rows, mapping).map(
-      normalizeImportRow,
+  const runPollImport = async (jobs: ImportJob[]) => {
+    setError(null);
+    const prepared = jobs.map((job) => {
+      const assignedDate =
+        job.assignedDate ??
+        (typeof job.assignment === 'number'
+          ? polls.find((p) => p.id === job.assignment)?.poll_date ?? null
+          : null);
+      const assignedPoll =
+        typeof job.assignment === 'number'
+          ? polls.find((p) => p.id === job.assignment) ??
+            (assignedDate
+              ? {
+                  id: job.assignment,
+                  poll_date: assignedDate,
+                  label: null,
+                  created_at: '',
+                }
+              : null)
+          : null;
+      const mapping = job.mapping ?? {};
+      const mapped = rowsToObjects(job.headers, job.rows, mapping).map(
+        normalizeImportRow,
+      );
+      const { rows: voterRows } = collapseImportRows(mapped);
+      const expanded = expandMappedPollResponses(
+        job.headers,
+        job.rows,
+        mapping,
+        job.inferredDate,
+        assignedDate,
+      );
+      const dates = [...new Set(expanded.map((r) => r.poll_date))].sort();
+      return { job, assignedPoll, voterRows, expanded, dates };
+    });
+    const empty = prepared.find((p) => p.expanded.length === 0);
+    if (empty) {
+      setError(
+        `No poll answers in ${empty.job.filename}. Map a Poll answer or Poll YYYY-MM-DD column.`,
+      );
+      setImportPhase('mapping');
+      setMappingIndex(jobs.findIndex((j) => j.filename === empty.job.filename));
+      return;
+    }
+
+    const totalSteps = prepared.reduce(
+      (n, p) => n + (Math.ceil(p.voterRows.length / VOTER_BATCH) || 0) + p.dates.length,
+      0,
     );
-    const { rows: voterRows } = collapseImportRows(mapped);
-    const expanded = expandMappedPollResponses(
-      importFile.headers,
-      importFile.rows,
-      mapping,
-      inferPollDateFromFilename(importFile.filename),
-    );
-    const dates = [...new Set(expanded.map((r) => r.poll_date))].sort();
-    const voterBatches = Math.ceil(voterRows.length / VOTER_BATCH) || 0;
-    const totalSteps = voterBatches + dates.length;
     if (totalSteps === 0) {
       setError('Nothing to import.');
       setImportPhase('idle');
@@ -217,79 +336,91 @@ export default function TrackingPolls() {
     let votersUpdated = 0;
     let imported = 0;
     let existing = 0;
+    let pollCount = 0;
     const errors: string[] = [];
-    let batchId: string | null = null;
     let step = 0;
 
-    for (let i = 0; i < voterRows.length; i += VOTER_BATCH) {
-      const chunk = voterRows.slice(i, i + VOTER_BATCH);
-      setImportProgress({
-        done: step,
-        total: totalSteps,
-        label: `Voters · ${Math.floor(i / VOTER_BATCH) + 1} of ${voterBatches}`,
-      });
-      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          const res = await importVoters({
-            rows: chunk,
-            filename: importFile.filename,
-            batchId,
-          });
-          batchId = res.batch_id;
-          votersInserted += res.inserted;
-          votersUpdated += res.updated;
-          break;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Voter batch failed';
-          if (isTimeout(msg) && attempt < MAX_RETRIES) {
-            await sleep(600 * attempt);
-            continue;
+    for (const item of prepared) {
+      let batchId: string | null = null;
+      const voterBatches = Math.ceil(item.voterRows.length / VOTER_BATCH) || 0;
+      for (let i = 0; i < item.voterRows.length; i += VOTER_BATCH) {
+        const chunk = item.voterRows.slice(i, i + VOTER_BATCH);
+        setImportProgress({
+          done: step,
+          total: totalSteps,
+          label: `${item.job.filename} · voters ${Math.floor(i / VOTER_BATCH) + 1} of ${voterBatches}`,
+        });
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            const res = await importVoters({
+              rows: chunk,
+              filename: item.job.filename,
+              batchId,
+            });
+            batchId = res.batch_id;
+            votersInserted += res.inserted;
+            votersUpdated += res.updated;
+            break;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Voter batch failed';
+            if (isTimeout(msg) && attempt < MAX_RETRIES) {
+              await sleep(600 * attempt);
+              continue;
+            }
+            errors.push(`${item.job.filename}: ${msg}`);
+            break;
           }
-          errors.push(msg);
-          break;
         }
+        step += 1;
+        await sleep(80);
       }
-      step += 1;
-      await sleep(80);
-    }
 
-    for (const date of dates) {
-      setImportProgress({
-        done: step,
-        total: totalSteps,
-        label: formatPollDate(date),
-      });
-      let ok = false;
-      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          const res = await confirmTrackingPollImport({
-            poll_date: date,
-            filename: importFile.filename,
-            file_hash: importFile.hash,
-            rows: expanded.filter((r) => r.poll_date === date),
-          });
-          imported += res.imported;
-          existing += res.existing ?? 0;
-          ok = true;
-          break;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Poll import failed';
-          if (isTimeout(msg) && attempt < MAX_RETRIES) {
-            await sleep(900 * attempt);
-            continue;
+      pollCount += item.dates.length;
+      for (const date of item.dates) {
+        const pollLabel = item.assignedPoll
+          ? pollDisplayName(item.assignedPoll)
+          : formatPollDate(date);
+        setImportProgress({
+          done: step,
+          total: totalSteps,
+          label: `${item.job.filename} · ${pollLabel}`,
+        });
+        let ok = false;
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            const res = await confirmTrackingPollImport({
+              poll_id:
+                typeof item.job.assignment === 'number'
+                  ? item.job.assignment
+                  : undefined,
+              poll_date: date,
+              filename: item.job.filename,
+              file_hash: item.job.hash,
+              rows: item.expanded.filter((r) => r.poll_date === date),
+            });
+            imported += res.imported;
+            existing += res.existing ?? 0;
+            ok = true;
+            break;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Poll import failed';
+            if (isTimeout(msg) && attempt < MAX_RETRIES) {
+              await sleep(900 * attempt);
+              continue;
+            }
+            errors.push(`${item.job.filename} · ${pollLabel}: ${msg}`);
           }
-          errors.push(`${formatPollDate(date)}: ${msg}`);
         }
+        if (ok) await sleep(250);
+        step += 1;
       }
-      if (ok) await sleep(250);
-      step += 1;
     }
 
     setImportProgress({ done: totalSteps, total: totalSteps, label: 'Done' });
     setImportResult({
       votersInserted,
       votersUpdated,
-      polls: dates.length,
+      polls: pollCount,
       imported,
       existing,
       errors: errors.slice(0, 20),
@@ -302,7 +433,7 @@ export default function TrackingPolls() {
     <div>
       <PageHeader
         title="Tracking polls"
-        description="Repeat contacts, flips, and preference over time. Re-import the same file to fill any dates that timed out — existing answers are skipped."
+        description="Create a poll, then import a CSV into it. Repeat contacts, flips, and preference over time. Re-import the same file to fill any dates that timed out — existing answers are skipped."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-md border border-slate-200 p-0.5">
@@ -330,19 +461,32 @@ export default function TrackingPolls() {
               </button>
             </div>
             {isAdmin ? (
-              <label className="btn-primary cursor-pointer">
-                Import
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    e.target.value = '';
-                    if (f) void pickImportFile(f);
+              <>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setNewPollDate(null);
+                    setNewPollOpen(true);
                   }}
-                />
-              </label>
+                >
+                  New poll
+                </button>
+                <label className="btn-primary cursor-pointer">
+                  Import
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const list = [...(e.target.files ?? [])];
+                      e.target.value = '';
+                      if (list.length) void pickImportFiles(list);
+                    }}
+                  />
+                </label>
+              </>
             ) : null}
           </div>
         }
@@ -406,11 +550,7 @@ export default function TrackingPolls() {
           <button
             type="button"
             className="btn-secondary"
-            onClick={() => {
-              setImportPhase('idle');
-              setImportFile(null);
-              setImportResult(null);
-            }}
+            onClick={resetImport}
           >
             Dismiss
           </button>
@@ -422,29 +562,60 @@ export default function TrackingPolls() {
       ) : polls.length === 0 && importPhase === 'idle' ? (
         <div className="card p-8 text-center">
           <p className="mb-4 text-sm text-slate-600">
-            Import the full tracking export. Voter fields update Search / Analytics;
-            Poll YYYY-MM-DD columns become these charts.
+            Create a tracking poll, then import a CSV into it. You can create several
+            polls and assign each file. Wide exports with Poll YYYY-MM-DD columns still
+            work.
           </p>
           {isAdmin ? (
-            <label className="btn-primary cursor-pointer">
-              Choose CSV
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  e.target.value = '';
-                  if (f) void pickImportFile(f);
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => {
+                  setNewPollDate(null);
+                  setNewPollOpen(true);
                 }}
-              />
-            </label>
+              >
+                New poll
+              </button>
+              <label className="btn-primary cursor-pointer">
+                Choose CSV
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    const list = [...(e.target.files ?? [])];
+                    e.target.value = '';
+                    if (list.length) void pickImportFiles(list);
+                  }}
+                />
+              </label>
+            </div>
           ) : (
             <p className="text-sm text-slate-500">Ask an admin to import.</p>
           )}
         </div>
       ) : (
         <div className="space-y-4">
+          {polls.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {polls.map((poll) => {
+                const n = answersByPoll.get(poll.id) ?? 0;
+                return (
+                  <span
+                    key={poll.id}
+                    className="chip"
+                    title={n ? `${n.toLocaleString()} answers` : 'No answers yet'}
+                  >
+                    {pollDisplayName(poll)}
+                    {n ? ` · ${n.toLocaleString()}` : ' · empty'}
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
           <div className="grid gap-2 sm:grid-cols-3">
             <Stat
               label="Unique respondents"
@@ -542,14 +713,27 @@ export default function TrackingPolls() {
         </div>
       )}
 
-      {importPhase === 'mapping' && importFile ? (
+      {importPhase === 'mapping' && mappingJob ? (
         <ImportMappingModal
-          title={`Map columns — ${importFile.filename}`}
-          description="Same mapping as voter import. Contact, petitions, and tags update the voter file. Poll YYYY-MM-DD columns become these charts."
-          headers={importFile.headers}
-          sampleRows={importFile.rows}
+          key={`${mappingIndex}:${mappingJob.filename}`}
+          title={`Map columns — ${mappingJob.filename}`}
+          description={
+            mappingPoll
+              ? `Answers go into ${pollDisplayName(mappingPoll)}. Map contact fields and the poll answer column.${
+                  mappingReuseCount
+                    ? ` This mapping also applies to ${mappingReuseCount} other file${mappingReuseCount === 1 ? '' : 's'} with the same columns.`
+                    : ''
+                }`
+              : `Same mapping as voter import. Contact, petitions, and tags update the voter file. Poll YYYY-MM-DD columns become these charts.${
+                  mappingReuseCount
+                    ? ` This mapping also applies to ${mappingReuseCount} other file${mappingReuseCount === 1 ? '' : 's'} with the same columns.`
+                    : ''
+                }`
+          }
+          headers={mappingJob.headers}
+          sampleRows={mappingJob.rows}
           petitions={petitions}
-          extraTargets={pollDateTargets(importFile.headers)}
+          extraTargets={pollDateTargets(mappingJob.headers)}
           onCreatePetition={async (label) => {
             const { petition } = await createPetitionApi({ label });
             if (!petition?.slug) throw new Error('Could not create petition');
@@ -557,13 +741,46 @@ export default function TrackingPolls() {
             reloadPetitions();
             return petition;
           }}
-          onCancel={() => {
-            setImportPhase('idle');
-            setImportFile(null);
-          }}
-          onConfirm={(mapping) => void runPollImport(mapping)}
+          onCancel={resetImport}
+          onConfirm={(mapping) => applyMapping(mapping)}
         />
       ) : null}
+
+      <TrackingPollAssignModal
+        open={importPhase === 'assign'}
+        files={importJobs}
+        polls={polls}
+        onClose={() => {
+          if (newPollOpen) return;
+          resetImport();
+        }}
+        onNewPoll={(date) => {
+          setNewPollDate(date ?? null);
+          setNewPollOpen(true);
+        }}
+        onConfirm={(assignments) => {
+          startMapping(
+            importJobs.map((job, i) => ({
+              ...job,
+              assignment: assignments[i],
+              assignedDate:
+                typeof assignments[i] === 'number'
+                  ? polls.find((p) => p.id === assignments[i])?.poll_date ??
+                    job.inferredDate
+                  : null,
+            })),
+          );
+        }}
+      />
+
+      <NewTrackingPollModal
+        open={newPollOpen}
+        initialDate={newPollDate}
+        onClose={() => setNewPollOpen(false)}
+        onCreated={(created) => {
+          setPolls((prev) => mergePolls(prev, created));
+        }}
+      />
     </div>
   );
 }

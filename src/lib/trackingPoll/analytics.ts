@@ -449,9 +449,10 @@ export function stackedPreference(
       const n = todd + risch + unsure;
       const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(poll.poll_date);
       const short = m ? `${Number(m[2])}/${Number(m[3])}` : poll.poll_date;
+      const name = poll.label?.trim() || short;
       return {
         poll_date: poll.poll_date,
-        label: `${short}\n(n=${n})`,
+        label: `${name}\n(n=${n})`,
         todd: n ? (todd / n) * 100 : 0,
         risch: n ? (risch / n) * 100 : 0,
         unsure: n ? (unsure / n) * 100 : 0,

@@ -26,14 +26,13 @@ import { logActivity } from "../lib/activityLog";
 import {
   clearClientDataCaches,
   fetchAnalytics,
-  fetchCampaignSyncState,
   fetchFilterOptions,
   fetchMapCampaignGeo,
   fetchMapPoints,
   syncCampaignIndexes,
 } from "../lib/api";
 import { loadCountyMapCoords } from "../lib/mapCoordsCache";
-import { downloadVotersCsv, sleep } from "../lib/exportVotersCsv";
+import { downloadVotersCsv, MAX_EXPORT_ROWS, sleep } from "../lib/exportVotersCsv";
 import { emptyFilters, summarizeFilters } from "../lib/filters";
 import { normalizeCountyName } from "../lib/idahoCounties";
 import { ageBandToRange, navigateToSearch } from "../lib/navigateToSearch";
@@ -47,6 +46,8 @@ import {
   mergeFiltersWithUnitCombo,
   sliceSummaryToPetitions,
   superSignerFilters,
+  petitionsFromAnalyticsSummary,
+  setPetitionLabelCache,
   usePetitions,
   useSelectedPetitions,
 } from "../lib/petitions";
@@ -107,8 +108,14 @@ export default function Analytics() {
   const [syncState, setSyncState] = useState<CampaignSyncState | null>(null);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-  const { activePetitions: allPetitions, groups: petitionGroups } =
-    usePetitions();
+  const { activePetitions, groups: petitionGroups } = usePetitions();
+  const fallbackPetitions = useMemo(
+    () => petitionsFromAnalyticsSummary(summary),
+    [summary],
+  );
+  const allPetitions = activePetitions.length
+    ? activePetitions
+    : fallbackPetitions;
   const {
     slugs: selectedSlugs,
     selected: selectedPetitions,
@@ -116,6 +123,21 @@ export default function Analytics() {
     selectAll,
     selectDefaults,
   } = useSelectedPetitions(allPetitions);
+
+  useEffect(() => {
+    if (activePetitions.length || !fallbackPetitions.length) return;
+    setPetitionLabelCache(fallbackPetitions);
+    try {
+      const raw = JSON.stringify({
+        at: Date.now(),
+        data: { petitions: fallbackPetitions, groups: [] },
+      });
+      sessionStorage.setItem("voter_petitions_v1", raw);
+      localStorage.setItem("voter_petitions_v1", raw);
+    } catch {
+      /* ignore */
+    }
+  }, [activePetitions.length, fallbackPetitions]);
 
   const runCampaignSync = async (opts?: {
     recomputeTags?: boolean;
@@ -140,48 +162,18 @@ export default function Analytics() {
       setReloadToken((n) => n + 1);
       return res.state;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Campaign sync failed");
+      if (!opts?.quiet) {
+        setError(err instanceof Error ? err.message : "Campaign sync failed");
+      }
       return null;
     } finally {
       setSyncing(false);
     }
   };
 
-  // Auto-sync FormHandler in the background after Analytics has loaded.
-  // Running it on mount raced the summary RPC and timed the free-tier DB out.
-  useEffect(() => {
-    let active = true;
-    void (async () => {
-      try {
-        const before = await fetchCampaignSyncState();
-        if (!active) return;
-        setSyncState(before.state);
-        const last = before.state?.last_success_at
-          ? Date.parse(before.state.last_success_at)
-          : 0;
-        if (Number.isFinite(last) && Date.now() - last < 30 * 60 * 1000) {
-          return;
-        }
-      } catch {
-        /* ignore */
-      }
-      if (!active) return;
-      await new Promise((r) => setTimeout(r, 1500));
-      if (!active) return;
-      await runCampaignSync({ recomputeTags: false, quiet: true });
-    })();
-    return () => {
-      active = false;
-    };
-    // Only on mount / hard reload.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Do not auto-sync on Analytics load. That GET raced the summary and
+  // kept a recovering origin in 522. Sync from Import when you need it.
 
-  useEffect(() => {
-    void fetchFilterOptions()
-      .then((o) => setOptions(mergeOptions(o)))
-      .catch(() => setOptions(EMPTY_FILTER_OPTIONS));
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -192,6 +184,7 @@ export default function Analytics() {
         .then((data) => {
           if (!active) return;
           setSummary(data);
+          setError(null);
         })
         .catch((err: Error) => {
           if (active) setError(err.message);
@@ -205,6 +198,13 @@ export default function Analytics() {
       clearTimeout(t);
     };
   }, [filters, reloadToken]);
+
+  useEffect(() => {
+    if (!summary) return;
+    void fetchFilterOptions()
+      .then((o) => setOptions(mergeOptions(o)))
+      .catch(() => setOptions(EMPTY_FILTER_OPTIONS));
+  }, [summary]);
 
   useEffect(() => {
     setCoords(null);
@@ -343,7 +343,7 @@ export default function Analytics() {
         signed_min_of: _o,
         ...rest
       } = filters;
-      const count = await downloadVotersCsv({
+      const { count } = await downloadVotersCsv({
         filters: { ...rest, ...filtersForSignedAny(slugs) },
         filename,
       });
@@ -364,7 +364,7 @@ export default function Analytics() {
     setError(null);
     try {
       const merged = mergeFiltersWithCombo(filters, mask, selectedPetitions);
-      const count = await downloadVotersCsv({
+      const { count } = await downloadVotersCsv({
         filters: merged,
         filename: comboExportFilename(mask, selectedPetitions),
       });
@@ -381,13 +381,19 @@ export default function Analytics() {
   };
 
   const exportAllCombos = async () => {
+    const rows = [...(chartSummary?.petition_combos ?? [])]
+      .map((c) => ({ mask: Number(c.mask), count: Number(c.count) || 0 }))
+      .filter((c) => c.count > 0 && c.mask !== 0);
+    const rowTotal = rows.reduce((s, c) => s + c.count, 0);
+    if (rows.length === 0) return;
+    const ok = window.confirm(
+      `This will download ${rows.length} CSV files (~${rowTotal.toLocaleString()} rows, each file capped at ${MAX_EXPORT_ROWS.toLocaleString()}).\n\nThat many sequential exports can slow the voter database. Continue?`,
+    );
+    if (!ok) return;
     setExportingAll(true);
     setError(null);
     try {
       let total = 0;
-      const rows = [...(chartSummary?.petition_combos ?? [])]
-        .map((c) => ({ mask: Number(c.mask), count: Number(c.count) || 0 }))
-        .filter((c) => c.count > 0 && c.mask !== 0);
       for (const combo of rows) {
         setExportingKey(combo.mask);
         const merged = mergeFiltersWithCombo(
@@ -395,12 +401,12 @@ export default function Analytics() {
           combo.mask,
           selectedPetitions,
         );
-        const count = await downloadVotersCsv({
+        const { count } = await downloadVotersCsv({
           filters: merged,
           filename: comboExportFilename(combo.mask, selectedPetitions),
         });
         total += count;
-        await sleep(400);
+        await sleep(800);
       }
       void logActivity({
         action: "export",
@@ -568,7 +574,7 @@ export default function Analytics() {
         ) : error && !summary ? (
           <EmptyState
             title="Could not load analytics"
-            description="Check that `npm run dev` is running and refresh."
+            description="The voter database is unreachable (Supabase 522). Wait a minute and refresh. This is not a local crash."
           />
         ) : !summary || summary.total === 0 ? (
           <EmptyState

@@ -1,6 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
+import { isVoterOriginDown } from '../../_lib/originError.js';
+import { recallPetitions, rememberPetitions } from '../../_lib/voterMemCache.js';
 
 function isAdmin(role: string) {
   return role === 'admin';
@@ -90,6 +92,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!ctx) return;
 
   if (req.method === 'GET') {
+    const cached = recallPetitions();
+    if (isVoterOriginDown() && cached) {
+      return json(res, 200, cached);
+    }
     const [petRes, groupRes] = await Promise.all([
       ctx.voter
         .from('petitions')
@@ -103,10 +109,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .order('slug', { ascending: true }),
     ]);
     if (petRes.error) {
+      if (cached) return json(res, 200, cached);
       const missingCol = /group_id|does not exist|schema cache/i.test(
         petRes.error.message,
       );
-      if (!missingCol) return json(res, 500, { error: petRes.error.message });
+      if (!missingCol) return json(res, 503, { error: petRes.error.message });
       const fallback = await ctx.voter
         .from('petitions')
         .select(
@@ -114,11 +121,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         )
         .order('sort_order', { ascending: true })
         .order('slug', { ascending: true });
-      if (fallback.error) return json(res, 500, { error: fallback.error.message });
-      return json(res, 200, { petitions: fallback.data ?? [], groups: [] });
+      if (fallback.error) {
+        if (cached) return json(res, 200, cached);
+        return json(res, 503, { error: fallback.error.message });
+      }
+      const payload = { petitions: fallback.data ?? [], groups: [] };
+      rememberPetitions(payload);
+      return json(res, 200, payload);
     }
     const groups = groupRes.error ? [] : (groupRes.data ?? []);
-    return json(res, 200, { petitions: petRes.data ?? [], groups });
+    const payload = { petitions: petRes.data ?? [], groups };
+    rememberPetitions(payload);
+    return json(res, 200, payload);
   }
 
   if (req.method === 'POST') {

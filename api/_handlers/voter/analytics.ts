@@ -1,23 +1,22 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
+import { isVoterOriginDown, isVoterOriginTimeout } from '../../_lib/originError.js';
+import { recallAnalytics, rememberAnalytics } from '../../_lib/voterMemCache.js';
 
 function isEmptyFilters(filters: unknown): boolean {
   if (filters == null) return true;
   if (typeof filters !== 'object') return true;
-  // Petition slugs only change the charts — slice those client-side.
   const keys = Object.keys(filters as Record<string, unknown>).filter(
     (k) => k !== 'petitions',
   );
   return keys.length === 0;
 }
 
-function cachedPetitionCount(cached: Record<string, unknown> | null): number {
-  if (!cached) return 0;
-  const petitions = cached.petitions;
-  if (Array.isArray(petitions) && petitions.length) return petitions.length;
-  const rows = cached.by_signature;
-  if (Array.isArray(rows) && rows.length) return rows.length;
-  return 0;
+function asCacheObj(cached: unknown): Record<string, unknown> | null {
+  if (!cached || typeof cached !== 'object') return null;
+  const obj = cached as Record<string, unknown>;
+  if (!Array.isArray(obj.petition_combos)) return null;
+  return obj;
 }
 
 function mergePresence(
@@ -37,82 +36,72 @@ function mergePresence(
   };
 }
 
+function serveCached(
+  cacheRow: Record<string, unknown> | null | undefined,
+  cachedObj: Record<string, unknown>,
+) {
+  const payload = mergePresence(
+    {
+      ...cachedObj,
+      analytics_from_cache: true,
+      analytics_summary_cached_at: cacheRow?.analytics_summary_cached_at ?? null,
+    },
+    cacheRow,
+  );
+  rememberAnalytics(payload);
+  return payload;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
   if (!ctx) return;
-  if (req.method !== 'POST') {
+  if (req.method !== 'POST' && req.method !== 'GET') {
     return json(res, 405, { error: 'Method not allowed' });
   }
 
-  const body = readBody<{ filters?: unknown }>(req);
+  const body = req.method === 'GET' ? {} : readBody<{ filters?: unknown }>(req);
   const filters = body.filters ?? {};
-  const empty = isEmptyFilters(filters);
+  const empty = req.method === 'GET' || isEmptyFilters(filters);
 
-  const cachePromise = ctx.voter
-    .from('campaign_sync_state')
-    .select(
-      'avg_nearby_yard_sign_miles, avg_nearby_volunteer_miles, avg_nearby_sample_size, avg_nearby_scope, avg_nearby_computed_at, universe_total, analytics_summary_cache, analytics_summary_cached_at',
-    )
-    .eq('id', 1)
-    .maybeSingle();
+  const mem = recallAnalytics();
 
-  // Fast path: unfiltered Analytics from cache (refreshed on campaign sync).
+  // Empty dashboard: one row from campaign_sync_state. Do not count petitions
+  // or run voter_analytics_summary — those are what take the origin down.
   if (empty) {
-    const [{ data: cache, error: cacheErr }, activeRes] = await Promise.all([
-      cachePromise,
-      ctx.voter
-        .from('petitions')
-        .select('id', { count: 'exact', head: true })
-        .eq('is_active', true),
-    ]);
+    if (isVoterOriginDown() && mem) {
+      return json(res, 200, mem);
+    }
+    const { data: cache, error: cacheErr } = await ctx.voter
+      .from('campaign_sync_state')
+      .select(
+        'avg_nearby_yard_sign_miles, avg_nearby_volunteer_miles, avg_nearby_sample_size, avg_nearby_scope, avg_nearby_computed_at, universe_total, analytics_summary_cache, analytics_summary_cached_at',
+      )
+      .eq('id', 1)
+      .maybeSingle();
+
     if (cacheErr) {
-      return json(res, 500, { error: cacheErr.message });
+      if (mem) return json(res, 200, mem);
+      return json(res, 503, { error: cacheErr.message });
     }
-    const cached = cache?.analytics_summary_cache;
-    const cachedObj =
-      cached && typeof cached === 'object'
-        ? (cached as Record<string, unknown>)
-        : null;
-    const hasCombos = Array.isArray(cachedObj?.petition_combos);
-    const activeCount = activeRes.count ?? 0;
-    const cacheCoversAll =
-      cachedPetitionCount(cachedObj) >= activeCount && activeCount > 0;
-    if (cachedObj && hasCombos && cacheCoversAll) {
-      return json(
-        res,
-        200,
-        mergePresence(
-          {
-            ...cachedObj,
-            analytics_from_cache: true,
-            analytics_summary_cached_at: cache?.analytics_summary_cached_at ?? null,
-          },
-          cache,
-        ),
-      );
+
+    const cachedObj = asCacheObj(cache?.analytics_summary_cache);
+    if (cachedObj) {
+      return json(res, 200, serveCached(cache as Record<string, unknown>, cachedObj));
     }
-    // Cache miss or pre-petition_combos snapshot — compute once and store.
+    if (mem) return json(res, 200, mem);
+
+    if (isVoterOriginDown()) {
+      return json(res, 503, { error: 'Voter database timed out' });
+    }
+
     const { data, error } = await ctx.voter.rpc('voter_analytics_summary', {
       filters: {},
     });
     if (error) {
-      if (cachedObj) {
-        return json(
-          res,
-          200,
-          mergePresence(
-            {
-              ...cachedObj,
-              analytics_from_cache: true,
-              analytics_summary_cached_at: cache?.analytics_summary_cached_at ?? null,
-            },
-            cache,
-          ),
-        );
-      }
-      return json(res, 500, { error: error.message });
+      return json(res, 503, { error: error.message });
     }
     const summary = (data ?? {}) as Record<string, unknown>;
+    rememberAnalytics(summary);
     await ctx.voter
       .from('campaign_sync_state')
       .update({
@@ -125,16 +114,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', 1);
-    return json(res, 200, mergePresence({ ...summary, analytics_from_cache: false }, cache));
+    return json(
+      res,
+      200,
+      mergePresence({ ...summary, analytics_from_cache: false }, cache),
+    );
+  }
+
+  if (isVoterOriginDown()) {
+    return json(res, 503, { error: 'Voter database timed out' });
   }
 
   const [summaryRes, cacheRes] = await Promise.all([
     ctx.voter.rpc('voter_analytics_summary', { filters }),
-    cachePromise,
+    ctx.voter
+      .from('campaign_sync_state')
+      .select(
+        'avg_nearby_yard_sign_miles, avg_nearby_volunteer_miles, avg_nearby_sample_size, avg_nearby_scope, avg_nearby_computed_at, universe_total',
+      )
+      .eq('id', 1)
+      .maybeSingle(),
   ]);
 
   if (summaryRes.error) {
-    return json(res, 500, { error: summaryRes.error.message });
+    const msg = summaryRes.error.message;
+    return json(res, isVoterOriginTimeout(msg) ? 503 : 500, { error: msg });
   }
 
   return json(
@@ -145,7 +149,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ...((summaryRes.data ?? {}) as Record<string, unknown>),
         analytics_from_cache: false,
       },
-      cacheRes.data,
+      cacheRes.data as Record<string, unknown> | null,
     ),
   );
 }

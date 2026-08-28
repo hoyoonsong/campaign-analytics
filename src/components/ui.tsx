@@ -96,6 +96,7 @@ export function Modal({
   children,
   wide = false,
   xl = false,
+  elevated = false,
 }: {
   open: boolean;
   title: string;
@@ -104,6 +105,7 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
   xl?: boolean;
+  elevated?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -122,7 +124,7 @@ export function Modal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:items-center">
+    <div className={clsx('fixed inset-0 flex items-start justify-center overflow-y-auto p-4 sm:items-center', elevated ? 'z-[60]' : 'z-50')}>
       <button
         type="button"
         className="absolute inset-0 bg-slate-900/40"

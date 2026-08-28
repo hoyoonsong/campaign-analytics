@@ -82,6 +82,7 @@ const allFiles = [
   'supabase/migrations/0055_universe_driven_tags.sql',
   'supabase/migrations/0056_fast_universe_tags.sql',
   'supabase/migrations/0057_one_pass_universe_tags.sql',
+  'supabase/migrations/0058_tracking_poll_source_party.sql',
 ];
 
 const applyFrom = process.env.APPLY_FROM || process.argv[2] || '0015';

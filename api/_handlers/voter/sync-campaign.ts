@@ -5,18 +5,28 @@ import {
   applyLeanSyncFallback,
   refreshPresenceBestEffort,
 } from '../../_lib/leanSyncFallback.js';
+import { isVoterOriginDown, isVoterOriginTimeout } from '../../_lib/originError.js';
+import { recallSyncState, rememberSyncState } from '../../_lib/voterMemCache.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
   if (!ctx) return;
 
   if (req.method === 'GET') {
+    const cached = recallSyncState();
+    if (isVoterOriginDown() && cached) {
+      return json(res, 200, { state: cached });
+    }
     const { data, error } = await ctx.voter
       .from('campaign_sync_state')
       .select('*')
       .eq('id', 1)
       .maybeSingle();
-    if (error) return json(res, 500, { error: error.message });
+    if (error) {
+      if (cached) return json(res, 200, { state: cached });
+      return json(res, 200, { state: null });
+    }
+    if (data) rememberSyncState(data as Record<string, unknown>);
     return json(res, 200, { state: data });
   }
 
@@ -47,6 +57,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     if (syncErr) {
+      if (isVoterOriginTimeout(syncErr.message)) {
+        return json(res, 503, {
+          error:
+            'Voter database timed out during FormHandler sync. Skip sync until Supabase is back — do not retry immediately.',
+        });
+      }
       // Pre-0036 SQL still has an unqualified UPDATE; PostgREST safeupdate
       // rejects it. Fall back to a WHERE-safe path so sync keeps working.
       // eslint-disable-next-line no-console

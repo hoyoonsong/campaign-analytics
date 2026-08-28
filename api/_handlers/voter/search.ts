@@ -38,29 +38,6 @@ async function ensureLeanGeo(
   }
 }
 
-/** Materialize supporter/maybe/opposed onto voters.supporter_tag when empty. */
-async function ensureSupporterTags(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  voter: { from: (t: string) => any; rpc: (fn: string, args?: object) => any },
-) {
-  const { count, error } = await voter
-    .from('voters')
-    .select('*', { count: 'exact', head: true })
-    .not('supporter_tag', 'is', null);
-  if (error) {
-    // eslint-disable-next-line no-console
-    console.warn('[search] tag count failed', error.message);
-    return;
-  }
-  if ((count ?? 0) > 0) return;
-
-  const { error: tagErr } = await voter.rpc('recompute_supporter_tags');
-  if (tagErr) {
-    // eslint-disable-next-line no-console
-    console.warn('[search] recompute_supporter_tags failed', tagErr.message);
-  }
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
   if (!ctx) return;
@@ -83,15 +60,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     Number(filters.nearby_yard_sign_max_miles) > 0 ||
     Number(filters.nearby_volunteer_min_miles) > 0 ||
     Number(filters.nearby_volunteer_max_miles) > 0;
-  const needsTags = Array.isArray(filters.supporter_tag)
-    ? filters.supporter_tag.length > 0
-    : false;
-
   if (needsNearby) {
     await ensureLeanGeo(ctx.voter);
-  }
-  if (needsTags) {
-    await ensureSupporterTags(ctx.voter);
   }
   if (filters.possible_duplicates === true) {
     const { error: dupErr } = await ctx.voter.rpc('ensure_possible_duplicates');
@@ -103,8 +73,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { data, error } = await ctx.voter.rpc('voter_search', {
     filters,
     q: body.q ?? '',
-    page: body.page ?? 1,
-    page_size: body.page_size ?? 50,
+    page: Math.max(1, Number(body.page) || 1),
+    page_size: Math.min(100, Math.max(1, Number(body.page_size) || 50)),
   });
 
   if (error) return json(res, 500, { error: error.message });

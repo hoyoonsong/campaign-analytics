@@ -1,5 +1,12 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import {
+  isVoterOriginDown,
+  isVoterOriginTimeout,
+  markVoterOriginDown,
+  markVoterOriginUp,
+  VOTER_ORIGIN_TIMEOUT_MESSAGE,
+} from './originError.js';
 
 export interface AuthedContext {
   user: User;
@@ -23,8 +30,62 @@ export function cors(res: VercelResponse) {
 }
 
 export function json(res: VercelResponse, status: number, body: unknown) {
+  if (
+    body &&
+    typeof body === 'object' &&
+    'error' in body &&
+    typeof (body as { error: unknown }).error === 'string'
+  ) {
+    const raw = (body as { error: string }).error;
+    if (isVoterOriginTimeout(raw)) {
+      res.status(status).json({
+        ...(body as object),
+        error: VOTER_ORIGIN_TIMEOUT_MESSAGE,
+      });
+      return;
+    }
+  }
   res.status(status).json(body);
 }
+
+/** One short attempt. Retries keep a 522 origin from recovering. */
+const voterFetch: typeof fetch = async (input, init) => {
+  if (isVoterOriginDown()) {
+    throw new Error(VOTER_ORIGIN_TIMEOUT_MESSAGE);
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8_000);
+  try {
+    const res = await fetch(input, { ...init, signal: ctrl.signal });
+    if (res.ok) {
+      markVoterOriginUp();
+      return res;
+    }
+    const preview = await res
+      .clone()
+      .text()
+      .then((t) => t.slice(0, 400))
+      .catch(() => '');
+    if (
+      isVoterOriginTimeout(preview) ||
+      res.status === 522 ||
+      res.status === 524
+    ) {
+      markVoterOriginDown();
+      throw new Error(VOTER_ORIGIN_TIMEOUT_MESSAGE);
+    }
+    return res;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    if (isVoterOriginTimeout(msg) || /aborted/i.test(msg)) {
+      markVoterOriginDown();
+      throw new Error(VOTER_ORIGIN_TIMEOUT_MESSAGE);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 export async function requireCampaignUser(
   req: VercelRequest,
@@ -84,6 +145,7 @@ export async function requireCampaignUser(
 
     const voter = createClient(voterUrl, voterService, {
       auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: voterFetch },
     });
 
     return {

@@ -28,6 +28,56 @@ async function authHeaders(): Promise<HeadersInit> {
   };
 }
 
+function sanitizeApiError(raw: string, status: number): string {
+  const text = raw.trim();
+  if (
+    /<!DOCTYPE html/i.test(text) ||
+    /<html[\s>]/i.test(text) ||
+    /cf-error-details|Error code 522|522: Connection timed out/i.test(text) ||
+    /aborted/i.test(text)
+  ) {
+    return 'Voter database timed out. Wait a minute and refresh — this is Supabase, not a local crash.';
+  }
+  if (text.length > 240) {
+    return `Request failed (${status}).`;
+  }
+  return text || `Request failed (${status})`;
+}
+
+function readAnalyticsCache(): { at: number; data: AnalyticsSummary } | null {
+  if (typeof sessionStorage === 'undefined') return null;
+  const keys = [
+    'analytics_summary_empty_v5',
+    'analytics_summary_empty_v4',
+  ];
+  const stores = [sessionStorage, localStorage];
+  for (const store of stores) {
+    for (const cacheKey of keys) {
+      try {
+        const raw = store.getItem(cacheKey);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw) as { at?: number; data?: AnalyticsSummary };
+        if (parsed?.data && Array.isArray(parsed.data.petition_combos)) {
+          return { at: parsed.at ?? 0, data: parsed.data };
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return null;
+}
+
+function writeAnalyticsCache(data: AnalyticsSummary) {
+  const payload = JSON.stringify({ at: Date.now(), data });
+  try {
+    sessionStorage.setItem('analytics_summary_empty_v5', payload);
+    localStorage.setItem('analytics_summary_empty_v5', payload);
+  } catch {
+    /* ignore */
+  }
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = await authHeaders();
   let res: Response;
@@ -37,24 +87,13 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { ...headers, ...(init?.headers ?? {}) },
     });
   } catch {
-    throw new Error(
-      'API unreachable. Restart with `npm run dev`.',
-    );
+    throw new Error('API unreachable. Restart with `npm run dev`.');
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const detail =
+    const raw =
       typeof body?.error === 'string' ? body.error : `Request failed (${res.status})`;
-    // Duplicate-key / constraint errors are app bugs, not a dead API.
-    if (
-      res.status >= 500 &&
-      !/duplicate key|unique constraint|statement timeout|canceling statement|permission denied/i.test(
-        detail,
-      )
-    ) {
-      throw new Error(`${detail}. Restart \`npm run dev\` and refresh.`);
-    }
-    throw new Error(detail);
+    throw new Error(sanitizeApiError(raw, res.status));
   }
   return body as T;
 }
@@ -67,58 +106,45 @@ export async function fetchAnalytics(
   // Sending slugs used to bust the cache and flash the 3-default snapshot.
   const payload = toFilterPayload(filters);
   const empty = Object.keys(payload).length === 0;
-  const cacheKey = 'analytics_summary_empty_v5';
+  const stale = empty ? readAnalyticsCache() : null;
 
-  if (empty && typeof sessionStorage !== 'undefined') {
-    try {
-      sessionStorage.removeItem('analytics_summary_empty_v1');
-      sessionStorage.removeItem('analytics_summary_empty_v2');
-      sessionStorage.removeItem('analytics_summary_empty_v3');
-      sessionStorage.removeItem('analytics_summary_empty_v4');
-      const raw = sessionStorage.getItem(cacheKey);
-      if (raw) {
-        const parsed = JSON.parse(raw) as {
-          at: number;
-          data: AnalyticsSummary;
-        };
-        // 10 minutes — server cache is source of truth; this just skips a round trip.
-        const rows = parsed.data?.by_signature?.length ?? 0;
-        const pets = parsed.data?.petitions?.length ?? 0;
-        if (
-          Date.now() - parsed.at < 10 * 60 * 1000 &&
-          Array.isArray(parsed.data?.petition_combos) &&
-          (rows >= 4 || pets >= 4)
-        ) {
-          return parsed.data;
-        }
-      }
-    } catch {
-      /* ignore */
+  if (stale) {
+    const age = Date.now() - stale.at;
+    if (age > 30 * 60 * 1000) {
+      void apiFetch<AnalyticsSummary>('/api/voter/analytics', {
+        method: 'POST',
+        body: JSON.stringify({ filters: payload }),
+      })
+        .then((data) => {
+          const complete =
+            (data.by_signature?.length ?? 0) >= 4 ||
+            (data.petitions?.length ?? 0) >= 4;
+          if (complete) writeAnalyticsCache(data);
+        })
+        .catch(() => {
+          /* keep stale */
+        });
     }
+    return stale.data;
   }
 
-  const data = await apiFetch<AnalyticsSummary>('/api/voter/analytics', {
-    method: 'POST',
-    body: JSON.stringify({ filters: payload }),
-  });
+  try {
+    const data = await apiFetch<AnalyticsSummary>('/api/voter/analytics', {
+      method: 'POST',
+      body: JSON.stringify({ filters: payload }),
+    });
 
-  const complete =
-    (data.by_signature?.length ?? 0) >= 4 ||
-    (data.petitions?.length ?? 0) >= 4;
-  if (empty && complete && typeof sessionStorage !== 'undefined') {
-    try {
-      sessionStorage.setItem(
-        cacheKey,
-        JSON.stringify({ at: Date.now(), data }),
-      );
-    } catch {
-      /* ignore */
-    }
+    const complete =
+      (data.by_signature?.length ?? 0) >= 4 ||
+      (data.petitions?.length ?? 0) >= 4;
+    if (empty && complete) writeAnalyticsCache(data);
+    return data;
+  } catch (err) {
+    const fallback = empty ? readAnalyticsCache() : null;
+    if (fallback) return fallback.data;
+    throw err;
   }
-
-  return data;
 }
-
 
 export function fetchMapPoints(filters: VoterFilters, limit = 2500) {
   return apiFetch<{
@@ -401,18 +427,21 @@ export function exportPage(opts: {
   filters: VoterFilters;
   afterId?: number | null;
   limit?: number;
+  exportedSoFar?: number;
 }) {
-  return apiFetch<{ rows: VoterRow[]; next_cursor: number | null }>(
-    '/api/voter/export',
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        filters: toFilterPayload(opts.filters),
-        after_id: opts.afterId ?? null,
-        limit: opts.limit ?? 1000,
-      }),
-    },
-  );
+  return apiFetch<{
+    rows: VoterRow[];
+    next_cursor: number | null;
+    truncated?: boolean;
+  }>('/api/voter/export', {
+    method: 'POST',
+    body: JSON.stringify({
+      filters: toFilterPayload(opts.filters),
+      after_id: opts.afterId ?? null,
+      limit: opts.limit ?? 400,
+      exported_so_far: opts.exportedSoFar ?? 0,
+    }),
+  });
 }
 
 export function listUniverses() {
@@ -570,8 +599,31 @@ export async function fetchFilterOptions() {
   return data;
 }
 
+let petitionsInflight: Promise<{
+  petitions: Array<{
+    id: number;
+    slug: string;
+    label: string;
+    short_label: string;
+    bit_index: number;
+    sort_order: number;
+    is_default: boolean;
+    is_active: boolean;
+    group_id?: number | null;
+  }>;
+  groups: Array<{
+    id: number;
+    slug: string;
+    label: string;
+    short_label: string;
+    sort_order: number;
+  }>;
+}> | null = null;
+
+const PETITIONS_CACHE_KEY = 'voter_petitions_v1';
+
 export async function fetchPetitionsApi() {
-  const data = await apiFetch<{
+  type Payload = {
     petitions: Array<{
       id: number;
       slug: string;
@@ -583,18 +635,80 @@ export async function fetchPetitionsApi() {
       is_active: boolean;
       group_id?: number | null;
     }>;
-    groups?: Array<{
+    groups: Array<{
       id: number;
       slug: string;
       label: string;
       short_label: string;
       sort_order: number;
     }>;
-  }>('/api/voter/petitions');
-  return {
-    petitions: data.petitions ?? [],
-    groups: data.groups ?? [],
   };
+
+  const readLocal = (): Payload | null => {
+    if (typeof sessionStorage === 'undefined') return null;
+    try {
+      const raw = sessionStorage.getItem(PETITIONS_CACHE_KEY) ?? localStorage.getItem(PETITIONS_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as { data?: Payload };
+      if (parsed?.data?.petitions?.length) return parsed.data;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  };
+
+  const local = readLocal();
+  if (local) {
+    if (!petitionsInflight) {
+      petitionsInflight = apiFetch<Payload>('/api/voter/petitions')
+        .then((data) => {
+          const payload = {
+            petitions: data.petitions ?? [],
+            groups: data.groups ?? [],
+          };
+          try {
+            const raw = JSON.stringify({ at: Date.now(), data: payload });
+            sessionStorage.setItem(PETITIONS_CACHE_KEY, raw);
+            localStorage.setItem(PETITIONS_CACHE_KEY, raw);
+          } catch {
+            /* ignore */
+          }
+          return payload;
+        })
+        .catch(() => local)
+        .finally(() => {
+          petitionsInflight = null;
+        });
+    }
+    return local;
+  }
+
+  if (!petitionsInflight) {
+    petitionsInflight = apiFetch<Payload>('/api/voter/petitions')
+      .then((data) => {
+        const payload = {
+          petitions: data.petitions ?? [],
+          groups: data.groups ?? [],
+        };
+        try {
+          const raw = JSON.stringify({ at: Date.now(), data: payload });
+          sessionStorage.setItem(PETITIONS_CACHE_KEY, raw);
+          localStorage.setItem(PETITIONS_CACHE_KEY, raw);
+        } catch {
+          /* ignore */
+        }
+        return payload;
+      })
+      .catch(() => {
+        const cached = readLocal();
+        if (cached) return cached;
+        return { petitions: [], groups: [] };
+      })
+      .finally(() => {
+        petitionsInflight = null;
+      });
+  }
+  return petitionsInflight;
 }
 
 export async function createPetitionApi(body: {
@@ -721,7 +835,20 @@ export async function previewTrackingPollImport(body: {
   });
 }
 
+export async function createTrackingPolls(
+  polls: Array<{ poll_date: string; label?: string | null }>,
+) {
+  return apiFetch<{ poll: TrackingPoll | null; polls: TrackingPoll[] }>(
+    '/api/voter/tracking-polls',
+    {
+      method: 'POST',
+      body: JSON.stringify({ action: 'create', polls }),
+    },
+  );
+}
+
 export async function confirmTrackingPollImport(body: {
+  poll_id?: number;
   poll_date: string;
   filename: string;
   file_hash?: string | null;

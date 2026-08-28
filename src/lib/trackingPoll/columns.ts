@@ -91,6 +91,21 @@ export function dateFromPollColumnKey(key: string): string | null {
   return key.startsWith('poll:') ? key.slice(5) : null;
 }
 
+export function pollAnswerTarget(): PollImportTarget {
+  return {
+    key: 'raw_answer',
+    label: 'Poll answer',
+    group: 'Tracking polls',
+    aliases: [
+      'poll answer',
+      'poll response',
+      'raw answer',
+      'response',
+      'preference',
+    ],
+  };
+}
+
 /** Poll-date columns only — use as extraTargets on the full voter mapper. */
 export function pollDateTargets(headers: string[]): PollImportTarget[] {
   const seen = new Set<string>();
@@ -107,6 +122,7 @@ export function pollDateTargets(headers: string[]): PollImportTarget[] {
     });
   }
   return [
+    pollAnswerTarget(),
     {
       key: 'gender',
       label: 'Gender',
@@ -122,6 +138,7 @@ export function expandMappedPollResponses(
   rows: string[][],
   mapping: Record<string, string>,
   fallbackDate?: string | null,
+  forceDate?: string | null,
 ): Array<ParsedPollRow & { poll_date: string }> {
   const pollEntries = Object.entries(mapping).filter(([key]) =>
     key.startsWith('poll:'),
@@ -133,6 +150,7 @@ export function expandMappedPollResponses(
 
   const out: Array<ParsedPollRow & { poll_date: string }> = [];
   const headerIndex = new Map(headers.map((h, i) => [h, i]));
+  const assignedDate = forceDate?.trim() || null;
 
   rows.forEach((row, i) => {
     const obj = rowsToObjects(headers, [row], identityMap)[0] ?? {};
@@ -150,7 +168,7 @@ export function expandMappedPollResponses(
       answered_at: (obj.answered_at ?? '').trim() || null,
     };
 
-    if (pollEntries.length > 0) {
+    if (pollEntries.length > 0 && !assignedDate) {
       for (const [key, header] of pollEntries) {
         const date = dateFromPollColumnKey(key);
         if (!date) continue;
@@ -167,11 +185,19 @@ export function expandMappedPollResponses(
       return;
     }
 
-    const raw = (obj.raw_answer ?? '').trim();
-    if (raw && fallbackDate) {
+    let raw = (obj.raw_answer ?? '').trim();
+    if (!raw && assignedDate) {
+      for (const [, header] of pollEntries) {
+        const idx = headerIndex.get(header);
+        raw = (idx == null ? '' : row[idx] ?? '').trim();
+        if (raw) break;
+      }
+    }
+    const date = assignedDate || fallbackDate || null;
+    if (raw && date) {
       out.push({
         uid: `r${i}`,
-        poll_date: fallbackDate,
+        poll_date: date,
         raw_answer: raw,
         ...base,
       });

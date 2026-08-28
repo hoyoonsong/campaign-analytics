@@ -12,6 +12,16 @@ export function formatPollDate(isoDate: string | null | undefined): string {
   });
 }
 
+/** Human-readable poll name: custom label, else the formatted date. */
+export function pollDisplayName(poll: {
+  poll_date: string;
+  label?: string | null;
+}): string {
+  const date = formatPollDate(poll.poll_date);
+  const label = poll.label?.trim();
+  return label ? `${label} · ${date}` : date;
+}
+
 export function formatPollDateShort(isoDate: string | null | undefined): string {
   if (!isoDate) return '—';
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);

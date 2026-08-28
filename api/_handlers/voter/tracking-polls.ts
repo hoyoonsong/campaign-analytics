@@ -37,7 +37,8 @@ type ExistingResponse = {
   raw_answer: string | null;
 };
 
-const DASH_COLS = 'id, poll_id, person_key, normalized_answer, voter_id';
+const DASH_COLS =
+  'id, poll_id, person_key, normalized_answer, voter_id, source_party, source_gender';
 
 function voterDisplayName(v: {
   first_name?: string | null;
@@ -154,14 +155,17 @@ async function lookupVoters(
   return { voters: found, error: null };
 }
 
+const POLL_COLS = 'id, poll_date, label, created_at';
+
 async function getOrCreatePoll(
   voter: SupabaseClient,
   pollDate: string,
   actor: string | null,
+  label?: string | null,
 ) {
   const existing = await voter
     .from('tracking_polls')
-    .select('id, poll_date, label, created_at')
+    .select(POLL_COLS)
     .eq('poll_date', pollDate)
     .maybeSingle();
   if (existing.error) return { poll: null, error: existing.error.message };
@@ -169,19 +173,27 @@ async function getOrCreatePoll(
 
   const inserted = await voter
     .from('tracking_polls')
-    .insert({ poll_date: pollDate, created_by: actor })
-    .select('id, poll_date, label, created_at')
+    .insert({
+      poll_date: pollDate,
+      label: label?.trim() || null,
+      created_by: actor,
+    })
+    .select(POLL_COLS)
     .single();
   if (inserted.error) {
     const again = await voter
       .from('tracking_polls')
-      .select('id, poll_date, label, created_at')
+      .select(POLL_COLS)
       .eq('poll_date', pollDate)
       .maybeSingle();
     if (again.data) return { poll: again.data, error: null };
     return { poll: null, error: inserted.error.message };
   }
   return { poll: inserted.data, error: null };
+}
+
+function isDuplicatePollDate(message: string) {
+  return /duplicate key|unique constraint|tracking_polls_poll_date/i.test(message);
 }
 
 function existingForDecision(
@@ -289,14 +301,17 @@ async function buildPreview(
       seenKeys.set(decision.person_key, { uid: row.uid, answer: normalized });
     }
 
+    const conflictRow = issue === 'conflict_identity';
     return {
       ...row,
       normalized_answer: normalized,
-      person_key: decision.person_key,
-      match_method: decision.method,
-      match_status: decision.match_status,
-      voter_id: decision.voter?.id ?? null,
-      voter_name: decision.voter ? voterDisplayName(decision.voter) : null,
+      person_key: conflictRow
+        ? personKeyFor({ fallback: row.uid ?? `${pollDate}-conflict` })
+        : decision.person_key,
+      match_method: conflictRow ? 'unmatched' : decision.method,
+      match_status: conflictRow ? 'conflict' : decision.match_status,
+      voter_id: conflictRow ? null : decision.voter?.id ?? null,
+      voter_name: conflictRow ? null : decision.voter ? voterDisplayName(decision.voter) : null,
       issue,
       issue_detail: detail,
       existing_response_id: prior?.id ?? null,
@@ -336,6 +351,8 @@ type DashRow = {
   voter_id?: number | null;
   party?: string | null;
   gender?: string | null;
+  source_party?: string | null;
+  source_gender?: string | null;
   voters?: DashVoter | DashVoter[] | null;
 };
 
@@ -370,8 +387,8 @@ function mapDashResponses(
       display_phone: null,
       display_email: null,
       profile_id: null,
-      party: r.party ?? voter?.party ?? null,
-      gender: r.gender ?? voter?.contact_tags ?? null,
+      party: r.source_party || r.party || voter?.party || null,
+      gender: r.source_gender || r.gender || voter?.contact_tags || null,
     };
   });
 }
@@ -450,9 +467,12 @@ async function loadDashboardRest(voter: SupabaseClient) {
       responses: mapDashResponses(
         rawRes.data.map((r) => ({
           ...r,
-          party: r.voter_id != null ? byVoter.get(r.voter_id)?.party ?? null : null,
+          party:
+            r.source_party ||
+            (r.voter_id != null ? byVoter.get(r.voter_id)?.party ?? null : null),
           gender:
-            r.voter_id != null ? byVoter.get(r.voter_id)?.contact_tags ?? null : null,
+            r.source_gender ||
+            (r.voter_id != null ? byVoter.get(r.voter_id)?.contact_tags ?? null : null),
         })),
         dateById,
       ),
@@ -498,7 +518,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'POST') {
     const body = readBody<{
       action?: string;
+      poll_id?: number;
       poll_date?: string;
+      label?: string | null;
+      polls?: Array<{ poll_date?: string; label?: string | null }>;
       filename?: string;
       file_hash?: string | null;
       rows?: ParsedRow[];
@@ -506,6 +529,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       q?: string;
     }>(req);
     const action = body.action ?? 'preview';
+
+    if (action === 'create') {
+      if (!isAdmin(ctx.profile.role)) return json(res, 403, { error: 'Admin only' });
+      const drafts =
+        Array.isArray(body.polls) && body.polls.length > 0
+          ? body.polls
+          : [{ poll_date: body.poll_date, label: body.label }];
+      const created: Array<{
+        id: number;
+        poll_date: string;
+        label: string | null;
+        created_at: string;
+      }> = [];
+      const actor = ctx.profile.email ?? ctx.user.email ?? null;
+      for (const draft of drafts) {
+        const pollDate = String(draft.poll_date ?? '').trim();
+        const label = String(draft.label ?? '').trim() || null;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(pollDate)) {
+          return json(res, 400, {
+            error: 'Each poll needs a date (YYYY-MM-DD).',
+            polls: created,
+          });
+        }
+        const inserted = await ctx.voter
+          .from('tracking_polls')
+          .insert({ poll_date: pollDate, label, created_by: actor })
+          .select(POLL_COLS)
+          .single();
+        if (inserted.error) {
+          if (isDuplicatePollDate(inserted.error.message)) {
+            return json(res, 409, {
+              error: `A tracking poll already exists for ${pollDate}.`,
+              polls: created,
+            });
+          }
+          return json(res, 500, { error: inserted.error.message, polls: created });
+        }
+        created.push(inserted.data);
+      }
+      await logActivityServer(ctx, {
+        action: 'create',
+        entityType: 'tracking_poll',
+        entityId: created.map((p) => String(p.id)).join(','),
+        metadata: {
+          count: created.length,
+          dates: created.map((p) => p.poll_date),
+        },
+      });
+      return json(res, 200, { poll: created[0] ?? null, polls: created });
+    }
 
     if (action === 'lookup') {
       const q = String(body.q ?? '').trim();
@@ -555,10 +628,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (action === 'confirm') {
       if (!isAdmin(ctx.profile.role)) return json(res, 403, { error: 'Admin only' });
-      const pollDate = String(body.poll_date ?? '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(pollDate)) {
-        return json(res, 400, { error: 'poll_date is required (YYYY-MM-DD)' });
+      const pollId = Number(body.poll_id) || 0;
+      let pollDate = String(body.poll_date ?? '').trim();
+      let poll: {
+        id: number;
+        poll_date: string;
+        label: string | null;
+        created_at: string;
+      } | null = null;
+
+      if (pollId) {
+        const existing = await ctx.voter
+          .from('tracking_polls')
+          .select(POLL_COLS)
+          .eq('id', pollId)
+          .maybeSingle();
+        if (existing.error) return json(res, 500, { error: existing.error.message });
+        if (!existing.data) return json(res, 404, { error: 'Tracking poll not found' });
+        poll = existing.data;
+        pollDate = poll.poll_date;
+      } else if (/^\d{4}-\d{2}-\d{2}$/.test(pollDate)) {
+        const created = await getOrCreatePoll(
+          ctx.voter,
+          pollDate,
+          ctx.profile.email ?? ctx.user.email ?? null,
+          body.label,
+        );
+        if (created.error || !created.poll) {
+          return json(res, 500, { error: created.error ?? 'Could not create poll' });
+        }
+        poll = created.poll;
+        pollDate = poll.poll_date;
+      } else {
+        return json(res, 400, { error: 'poll_id or poll_date is required' });
       }
+      if (!poll) return json(res, 500, { error: 'Could not resolve tracking poll' });
+
       const built = await buildPreview(ctx.voter, {
         poll_date: pollDate,
         filename: body.filename,
@@ -568,13 +673,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (built.error || !built.preview) return json(res, 500, { error: built.error ?? 'Preview failed' });
       const preview = built.preview;
       const resolutions = body.resolutions ?? {};
-
-      const { poll, error: pollErr } = await getOrCreatePoll(
-        ctx.voter,
-        pollDate,
-        ctx.profile.email ?? ctx.user.email ?? null,
-      );
-      if (pollErr || !poll) return json(res, 500, { error: pollErr ?? 'Could not create poll' });
 
       const importRow = await ctx.voter
         .from('tracking_poll_imports')
@@ -599,8 +697,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const toInsert: Record<string, unknown>[] = [];
       const toReplace: Array<{ id: number; patch: Record<string, unknown> }> = [];
+      const toStamp: Array<{ id: number; patch: Record<string, unknown> }> = [];
 
       for (const row of preview.rows) {
+        const sourceFields = {
+          source_party: row.source_party ?? null,
+          source_gender: row.source_gender ?? null,
+        };
+        if (row.issue === 'existing' && row.existing_response_id) {
+          toStamp.push({
+            id: row.existing_response_id,
+            patch: sourceFields,
+          });
+          continue;
+        }
         if (row.issue === 'conflict_response') {
           const choice = resolutions[row.uid] ?? resolutions[String(row.existing_response_id)];
           if (choice === 'replace' && row.existing_response_id) {
@@ -615,12 +725,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 source_phone: row.source_phone,
                 source_email: row.source_email,
                 source_profile_id: row.source_profile_id,
+                ...sourceFields,
               },
             });
           }
           continue;
         }
-        if (row.issue !== 'ready' && row.issue !== 'unmatched') continue;
+        if (
+          row.issue !== 'ready' &&
+          row.issue !== 'unmatched' &&
+          row.issue !== 'conflict_identity'
+        ) {
+          continue;
+        }
         toInsert.push({
           poll_id: poll.id,
           import_id: importId,
@@ -635,6 +752,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           raw_answer: row.raw_answer,
           normalized_answer: row.normalized_answer,
           answered_at: row.answered_at,
+          ...sourceFields,
         });
       }
 
@@ -665,6 +783,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .update(item.patch)
           .eq('id', item.id);
         if (!error) imported += 1;
+      }
+
+      for (let i = 0; i < toStamp.length; i += 80) {
+        await Promise.all(
+          toStamp.slice(i, i + 80).map((item) =>
+            ctx.voter.from('tracking_poll_responses').update(item.patch).eq('id', item.id),
+          ),
+        );
       }
 
       await ctx.voter

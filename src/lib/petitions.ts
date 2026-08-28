@@ -362,6 +362,25 @@ export async function fetchPetitions(): Promise<Petition[]> {
   return petitions;
 }
 
+/** Build picker rows from a cached analytics summary when GET /petitions is down. */
+export function petitionsFromAnalyticsSummary(
+  summary: AnalyticsSummary | null | undefined,
+): Petition[] {
+  const rows = summary?.petitions ?? [];
+  return rows
+    .filter((p) => p.slug && Number.isFinite(Number(p.bit_index)))
+    .map((p, i) => ({
+      id: i + 1,
+      slug: p.slug,
+      label: p.label || p.slug,
+      short_label: p.short_label || p.label || p.slug,
+      bit_index: Number(p.bit_index),
+      sort_order: p.sort_order ?? i,
+      is_default: Boolean(p.is_default),
+      is_active: true,
+    }));
+}
+
 export function usePetitions() {
   const [petitions, setPetitions] = useState<Petition[]>([]);
   const [groups, setGroups] = useState<PetitionGroup[]>([]);
@@ -379,7 +398,10 @@ export function usePetitions() {
         setGroups(data.groups ?? []);
         setError(null);
       })
-      .catch((err: Error) => setError(err.message))
+      .catch((err: Error) => {
+        setError(err.message);
+        // Keep any already-loaded rows so charts do not collapse to 0 of 0.
+      })
       .finally(() => setLoading(false));
   }, []);
 
