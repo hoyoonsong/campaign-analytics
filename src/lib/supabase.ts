@@ -21,6 +21,6 @@ export const supabase = createClient(url ?? '', anonKey ?? '', {
   },
 });
 
-export const PORTAL_URL =
-  (import.meta.env.VITE_PORTAL_URL as string | undefined)?.replace(/\/$/, '') ??
-  'https://forms.achillesforidaho.com';
+/** Live FormHandler — never localhost, even if an old env var is set. */
+export const PORTAL_URL = 'https://forms.achillesforidaho.com';
+export const PORTAL_DASHBOARD_URL = `${PORTAL_URL}/dashboard`;

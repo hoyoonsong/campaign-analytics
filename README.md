@@ -45,7 +45,7 @@ Localhost origins are allowlisted automatically. After login (password or Google
 
 ```bash
 cp .env.example .env.local
-# Fill VITE_CAMPAIGN_* and VITE_PORTAL_URL
+# Fill VITE_CAMPAIGN_*
 ```
 
 On Vercel, also set **server** env vars (not `VITE_`):
