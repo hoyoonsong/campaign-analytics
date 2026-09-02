@@ -1,6 +1,8 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
+  isCloudflareOriginDeath,
+  isExpensiveVoterRequest,
   isVoterOriginDown,
   isVoterOriginTimeout,
   markVoterOriginDown,
@@ -48,13 +50,14 @@ export function json(res: VercelResponse, status: number, body: unknown) {
   res.status(status).json(body);
 }
 
-/** One short attempt. Retries keep a 522 origin from recovering. */
+/** Cheap table reads get 20s. Heavy RPCs get 10s and a circuit breaker. */
 const voterFetch: typeof fetch = async (input, init) => {
-  if (isVoterOriginDown()) {
+  const expensive = isExpensiveVoterRequest(input);
+  if (expensive && isVoterOriginDown()) {
     throw new Error(VOTER_ORIGIN_TIMEOUT_MESSAGE);
   }
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8_000);
+  const timer = setTimeout(() => ctrl.abort(), expensive ? 10_000 : 20_000);
   try {
     const res = await fetch(input, { ...init, signal: ctrl.signal });
     if (res.ok) {
@@ -66,19 +69,19 @@ const voterFetch: typeof fetch = async (input, init) => {
       .text()
       .then((t) => t.slice(0, 400))
       .catch(() => '');
-    if (
-      isVoterOriginTimeout(preview) ||
-      res.status === 522 ||
-      res.status === 524
-    ) {
+    if (isCloudflareOriginDeath(preview, res.status)) {
       markVoterOriginDown();
       throw new Error(VOTER_ORIGIN_TIMEOUT_MESSAGE);
     }
     return res;
   } catch (err) {
     const msg = err instanceof Error ? err.message : '';
-    if (isVoterOriginTimeout(msg) || /aborted/i.test(msg)) {
+    if (isCloudflareOriginDeath(msg)) {
       markVoterOriginDown();
+      throw new Error(VOTER_ORIGIN_TIMEOUT_MESSAGE);
+    }
+    if (/aborted/i.test(msg)) {
+      if (expensive) markVoterOriginDown();
       throw new Error(VOTER_ORIGIN_TIMEOUT_MESSAGE);
     }
     throw err;

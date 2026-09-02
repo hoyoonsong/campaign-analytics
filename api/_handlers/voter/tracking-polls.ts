@@ -2,6 +2,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
 import { logActivityServer } from '../../_lib/log.js';
+import { isVoterOriginDown } from '../../_lib/originError.js';
+import { recallTracking, rememberTracking } from '../../_lib/voterMemCache.js';
 import {
   decideMatch,
   indexVoters,
@@ -37,8 +39,28 @@ type ExistingResponse = {
   raw_answer: string | null;
 };
 
-const DASH_COLS =
-  'id, poll_id, person_key, normalized_answer, voter_id, source_party, source_gender';
+const DASH_COLS_CORE =
+  'id, poll_id, person_key, normalized_answer, voter_id';
+const DASH_COLS_SOURCE = `${DASH_COLS_CORE}, source_party, source_gender`;
+
+/** 0058 adds these; until it is applied, REST/RPC must not require them. */
+let sourcePartyCols: boolean | null = null;
+
+function isMissingSourceCol(message: string | null | undefined) {
+  const m = String(message ?? '');
+  return (
+    /source_party|source_gender/i.test(m) &&
+    /does not exist|schema cache|42703/i.test(m)
+  );
+}
+
+function noteSourceCols(errorMessage: string | null | undefined, present: boolean) {
+  if (errorMessage && isMissingSourceCol(errorMessage)) {
+    sourcePartyCols = false;
+    return;
+  }
+  if (present) sourcePartyCols = true;
+}
 
 function voterDisplayName(v: {
   first_name?: string | null;
@@ -56,23 +78,12 @@ async function fetchAll<T>(
 ): Promise<{ data: T[]; error: string | null }> {
   const page = 1000;
   const out: T[] = [];
-  const first = await query(0, page - 1);
-  if (first.error) return { data: [], error: first.error.message };
-  out.push(...(((first.data as T[] | null) ?? []) as T[]));
-  if (out.length < page) return { data: out, error: null };
-
-  let from = page;
-  while (true) {
-    const wave = await Promise.all(
-      [0, 1, 2, 3].map((i) => query(from + i * page, from + (i + 1) * page - 1)),
-    );
-    for (const { data, error } of wave) {
-      if (error) return { data: out, error: error.message };
-      const rows = ((data as T[] | null) ?? []) as T[];
-      out.push(...rows);
-      if (rows.length < page) return { data: out, error: null };
-    }
-    from += page * 4;
+  for (let from = 0; ; from += page) {
+    const { data, error } = await query(from, from + page - 1);
+    if (error) return { data: out, error: error.message };
+    const rows = ((data as T[] | null) ?? []) as T[];
+    out.push(...rows);
+    if (rows.length < page) return { data: out, error: null };
   }
 }
 
@@ -393,6 +404,11 @@ function mapDashResponses(
   });
 }
 
+function dashSelect(withVoters: boolean) {
+  const cols = sourcePartyCols === false ? DASH_COLS_CORE : DASH_COLS_SOURCE;
+  return withVoters ? `${cols}, voters(party, contact_tags)` : cols;
+}
+
 async function loadDashboardRest(voter: SupabaseClient) {
   const pollsRes = await voter
     .from('tracking_polls')
@@ -407,14 +423,22 @@ async function loadDashboardRest(voter: SupabaseClient) {
     ]),
   );
 
-  const nested = await fetchAll<DashRow>((from, to) =>
-    voter
-      .from('tracking_poll_responses')
-      .select(`${DASH_COLS}, voters(party, contact_tags)`)
-      .order('id', { ascending: true })
-      .range(from, to),
-  );
+  const pageResponses = (cols: string) =>
+    fetchAll<DashRow>((from, to) =>
+      voter
+        .from('tracking_poll_responses')
+        .select(cols)
+        .order('id', { ascending: true })
+        .range(from, to),
+    );
+
+  let nested = await pageResponses(dashSelect(true));
+  if (nested.error && isMissingSourceCol(nested.error)) {
+    noteSourceCols(nested.error, false);
+    nested = await pageResponses(dashSelect(true));
+  }
   if (!nested.error) {
+    noteSourceCols(null, sourcePartyCols !== false);
     return {
       error: null,
       data: {
@@ -425,14 +449,13 @@ async function loadDashboardRest(voter: SupabaseClient) {
     };
   }
 
-  const rawRes = await fetchAll<DashRow>((from, to) =>
-    voter
-      .from('tracking_poll_responses')
-      .select(DASH_COLS)
-      .order('id', { ascending: true })
-      .range(from, to),
-  );
+  let rawRes = await pageResponses(dashSelect(false));
+  if (rawRes.error && isMissingSourceCol(rawRes.error)) {
+    noteSourceCols(rawRes.error, false);
+    rawRes = await pageResponses(dashSelect(false));
+  }
   if (rawRes.error) return { error: rawRes.error, data: null };
+  noteSourceCols(null, sourcePartyCols !== false);
 
   const voterIds = [
     ...new Set(
@@ -496,12 +519,7 @@ async function loadDashboard(voter: SupabaseClient) {
       },
     };
   }
-  if (
-    rpc.error &&
-    !/does not exist|schema cache|tracking_poll_dashboard/i.test(rpc.error.message)
-  ) {
-    return { error: rpc.error.message, data: null };
-  }
+  if (rpc.error) noteSourceCols(rpc.error.message, false);
   return loadDashboardRest(voter);
 }
 
@@ -510,9 +528,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!ctx) return;
 
   if (req.method === 'GET') {
-    const loaded = await loadDashboard(ctx.voter);
-    if (loaded.error) return json(res, 500, { error: loaded.error });
-    return json(res, 200, loaded.data);
+    const cached = recallTracking();
+    if (isVoterOriginDown() && cached) {
+      return json(res, 200, cached);
+    }
+    try {
+      const loaded = await loadDashboard(ctx.voter);
+      if (loaded.error) {
+        if (cached) return json(res, 200, cached);
+        return json(res, 500, { error: loaded.error });
+      }
+      if (loaded.data) rememberTracking(loaded.data as Record<string, unknown>);
+      return json(res, 200, loaded.data);
+    } catch (err) {
+      if (cached) return json(res, 200, cached);
+      return json(res, 500, {
+        error: err instanceof Error ? err.message : 'Could not load tracking polls',
+      });
+    }
   }
 
   if (req.method === 'POST') {
@@ -699,16 +732,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const toReplace: Array<{ id: number; patch: Record<string, unknown> }> = [];
       const toStamp: Array<{ id: number; patch: Record<string, unknown> }> = [];
 
+      const sourceFields = (row: {
+        source_party?: string | null;
+        source_gender?: string | null;
+      }) =>
+        sourcePartyCols === false
+          ? {}
+          : {
+              source_party: row.source_party ?? null,
+              source_gender: row.source_gender ?? null,
+            };
+
+      const withoutSource = (row: Record<string, unknown>) => {
+        const next = { ...row };
+        delete next.source_party;
+        delete next.source_gender;
+        return next;
+      };
+
       for (const row of preview.rows) {
-        const sourceFields = {
-          source_party: row.source_party ?? null,
-          source_gender: row.source_gender ?? null,
-        };
+        const extra = sourceFields(row);
         if (row.issue === 'existing' && row.existing_response_id) {
-          toStamp.push({
-            id: row.existing_response_id,
-            patch: sourceFields,
-          });
+          if (Object.keys(extra).length) {
+            toStamp.push({
+              id: row.existing_response_id,
+              patch: extra,
+            });
+          }
           continue;
         }
         if (row.issue === 'conflict_response') {
@@ -725,7 +775,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 source_phone: row.source_phone,
                 source_email: row.source_email,
                 source_profile_id: row.source_profile_id,
-                ...sourceFields,
+                ...extra,
               },
             });
           }
@@ -752,13 +802,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           raw_answer: row.raw_answer,
           normalized_answer: row.normalized_answer,
           answered_at: row.answered_at,
-          ...sourceFields,
+          ...extra,
         });
       }
 
       let imported = 0;
       for (let i = 0; i < toInsert.length; i += 80) {
-        const chunk = toInsert.slice(i, i + 80);
+        let chunk = toInsert.slice(i, i + 80);
         let lastErr: string | null = null;
         for (let attempt = 1; attempt <= 4; attempt++) {
           const { error } = await ctx.voter.from('tracking_poll_responses').insert(chunk);
@@ -768,6 +818,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             break;
           }
           lastErr = error.message;
+          if (isMissingSourceCol(error.message)) {
+            noteSourceCols(error.message, false);
+            chunk = chunk.map(withoutSource);
+            continue;
+          }
           if (!/timeout|canceling|deadlock/i.test(error.message) || attempt === 4) break;
           await new Promise((r) => setTimeout(r, 400 * attempt));
         }
@@ -778,11 +833,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       for (const item of toReplace) {
+        let patch = item.patch;
         const { error } = await ctx.voter
           .from('tracking_poll_responses')
-          .update(item.patch)
+          .update(patch)
           .eq('id', item.id);
-        if (!error) imported += 1;
+        if (error && isMissingSourceCol(error.message)) {
+          noteSourceCols(error.message, false);
+          patch = withoutSource(patch);
+          const retry = await ctx.voter
+            .from('tracking_poll_responses')
+            .update(patch)
+            .eq('id', item.id);
+          if (!retry.error) imported += 1;
+        } else if (!error) {
+          imported += 1;
+        }
       }
 
       for (let i = 0; i < toStamp.length; i += 80) {

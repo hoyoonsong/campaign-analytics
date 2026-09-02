@@ -362,6 +362,31 @@ export async function fetchPetitions(): Promise<Petition[]> {
   return petitions;
 }
 
+type PetitionCache = { petitions: Petition[]; groups: PetitionGroup[] };
+let petitionMemory: PetitionCache | null = null;
+let petitionInflight: Promise<PetitionCache> | null = null;
+
+async function loadPetitionsShared(): Promise<PetitionCache> {
+  if (petitionMemory?.petitions.length) return petitionMemory;
+  if (!petitionInflight) {
+    petitionInflight = import('./api')
+      .then(({ fetchPetitionsApi }) => fetchPetitionsApi())
+      .then((data) => {
+        const next = {
+          petitions: data.petitions ?? [],
+          groups: data.groups ?? [],
+        };
+        if (next.petitions.length) petitionMemory = next;
+        setPetitionLabelCache(next.petitions.filter((p) => p.is_active));
+        return next;
+      })
+      .finally(() => {
+        petitionInflight = null;
+      });
+  }
+  return petitionInflight;
+}
+
 /** Build picker rows from a cached analytics summary when GET /petitions is down. */
 export function petitionsFromAnalyticsSummary(
   summary: AnalyticsSummary | null | undefined,
@@ -382,41 +407,62 @@ export function petitionsFromAnalyticsSummary(
 }
 
 export function usePetitions() {
-  const [petitions, setPetitions] = useState<Petition[]>([]);
-  const [groups, setGroups] = useState<PetitionGroup[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [petitions, setPetitions] = useState<Petition[]>(
+    () => petitionMemory?.petitions ?? [],
+  );
+  const [groups, setGroups] = useState<PetitionGroup[]>(
+    () => petitionMemory?.groups ?? [],
+  );
+  const [loading, setLoading] = useState(!petitionMemory?.petitions.length);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(() => {
+    petitionMemory = null;
     setLoading(true);
-    void import('./api')
-      .then(({ fetchPetitionsApi }) => fetchPetitionsApi())
+    void loadPetitionsShared()
       .then((data) => {
-        const rows = data.petitions ?? [];
-        setPetitionLabelCache(rows.filter((p) => p.is_active));
-        setPetitions(rows);
-        setGroups(data.groups ?? []);
+        setPetitions(data.petitions);
+        setGroups(data.groups);
         setError(null);
       })
       .catch((err: Error) => {
         setError(err.message);
-        // Keep any already-loaded rows so charts do not collapse to 0 of 0.
       })
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    reload();
-  }, [reload]);
+    if (petitionMemory?.petitions.length) {
+      setPetitions(petitionMemory.petitions);
+      setGroups(petitionMemory.groups);
+      setLoading(false);
+      return;
+    }
+    void loadPetitionsShared()
+      .then((data) => {
+        setPetitions(data.petitions);
+        setGroups(data.groups);
+        setError(null);
+      })
+      .catch((err: Error) => {
+        setError(err.message);
+      })
+      .finally(() => setLoading(false));
+  }, []);
 
   const addLocal = useCallback((row: Petition) => {
     addPetitionToLabelCache(row);
     setPetitions((cur) => {
       const hit = cur.findIndex((p) => p.id === row.id || p.slug === row.slug);
-      if (hit >= 0) {
-        return cur.map((p, i) => (i === hit ? { ...p, ...row } : p));
-      }
-      return [...cur, row];
+      const next =
+        hit >= 0
+          ? cur.map((p, i) => (i === hit ? { ...p, ...row } : p))
+          : [...cur, row];
+      petitionMemory = {
+        petitions: next,
+        groups: petitionMemory?.groups ?? [],
+      };
+      return next;
     });
   }, []);
 

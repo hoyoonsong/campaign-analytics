@@ -109,22 +109,6 @@ export async function fetchAnalytics(
   const stale = empty ? readAnalyticsCache() : null;
 
   if (stale) {
-    const age = Date.now() - stale.at;
-    if (age > 30 * 60 * 1000) {
-      void apiFetch<AnalyticsSummary>('/api/voter/analytics', {
-        method: 'POST',
-        body: JSON.stringify({ filters: payload }),
-      })
-        .then((data) => {
-          const complete =
-            (data.by_signature?.length ?? 0) >= 4 ||
-            (data.petitions?.length ?? 0) >= 4;
-          if (complete) writeAnalyticsCache(data);
-        })
-        .catch(() => {
-          /* keep stale */
-        });
-    }
     return stale.data;
   }
 
@@ -143,6 +127,56 @@ export async function fetchAnalytics(
     const fallback = empty ? readAnalyticsCache() : null;
     if (fallback) return fallback.data;
     throw err;
+  }
+}
+
+const CAMPAIGN_GEO_KEY = 'campaign_geo_v1';
+
+function readCampaignGeoCache(): {
+  campaign_geo?: Array<{
+    kind: 'volunteer' | 'yard_sign';
+    lat: number;
+    lng: number;
+    source_id?: string;
+    name?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    address?: string | null;
+  }>;
+} | null {
+  if (typeof sessionStorage === 'undefined') return null;
+  try {
+    const raw =
+      sessionStorage.getItem(CAMPAIGN_GEO_KEY) ??
+      localStorage.getItem(CAMPAIGN_GEO_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { campaign_geo?: unknown };
+    if (Array.isArray(parsed?.campaign_geo) && parsed.campaign_geo.length) {
+      return parsed as { campaign_geo: Array<{
+        kind: 'volunteer' | 'yard_sign';
+        lat: number;
+        lng: number;
+        source_id?: string;
+        name?: string | null;
+        email?: string | null;
+        phone?: string | null;
+        address?: string | null;
+      }> };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function writeCampaignGeoCache(data: { campaign_geo?: unknown }) {
+  if (!Array.isArray(data.campaign_geo) || !data.campaign_geo.length) return;
+  try {
+    const raw = JSON.stringify({ campaign_geo: data.campaign_geo });
+    sessionStorage.setItem(CAMPAIGN_GEO_KEY, raw);
+    localStorage.setItem(CAMPAIGN_GEO_KEY, raw);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -168,22 +202,30 @@ export function fetchMapPoints(filters: VoterFilters, limit = 2500) {
   });
 }
 
-export function fetchMapCampaignGeo() {
-  return apiFetch<{
-    campaign_geo?: Array<{
-      kind: 'volunteer' | 'yard_sign';
-      lat: number;
-      lng: number;
-      source_id?: string;
-      name?: string | null;
-      email?: string | null;
-      phone?: string | null;
-      address?: string | null;
-    }>;
-  }>('/api/voter/map-points', {
-    method: 'POST',
-    body: JSON.stringify({ geo_only: true }),
-  });
+export async function fetchMapCampaignGeo() {
+  const cached = readCampaignGeoCache();
+  if (cached) return cached;
+  try {
+    const data = await apiFetch<{
+      campaign_geo?: Array<{
+        kind: 'volunteer' | 'yard_sign';
+        lat: number;
+        lng: number;
+        source_id?: string;
+        name?: string | null;
+        email?: string | null;
+        phone?: string | null;
+        address?: string | null;
+      }>;
+    }>('/api/voter/map-points', {
+      method: 'POST',
+      body: JSON.stringify({ geo_only: true }),
+    });
+    writeCampaignGeoCache(data);
+    return data;
+  } catch {
+    return { campaign_geo: [] };
+  }
 }
 
 export function fetchMapSnapshot(county: string, haveVersion?: number | null) {
@@ -406,21 +448,42 @@ export type ContactSuggestionsResult = {
   };
 };
 
-export function fetchContactSuggestions(opts?: {
+export async function fetchContactSuggestions(opts?: {
   party?: string | null;
   signed_min?: number;
   page?: number;
   page_size?: number;
 }) {
-  return apiFetch<ContactSuggestionsResult>('/api/voter/contact-suggestions', {
-    method: 'POST',
-    body: JSON.stringify({
-      party: opts?.party ?? null,
-      signed_min: opts?.signed_min ?? 1,
-      page: opts?.page ?? 1,
-      page_size: opts?.page_size ?? 50,
-    }),
-  });
+  const body = {
+    party: opts?.party ?? null,
+    signed_min: opts?.signed_min ?? 1,
+    page: opts?.page ?? 1,
+    page_size: opts?.page_size ?? 50,
+  };
+  const key = `contact_suggestions_${body.party ?? 'all'}_${body.signed_min}_${body.page}`;
+  try {
+    const data = await apiFetch<ContactSuggestionsResult>(
+      '/api/voter/contact-suggestions',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    );
+    try {
+      sessionStorage.setItem(key, JSON.stringify(data));
+    } catch {
+      /* ignore */
+    }
+    return data;
+  } catch (err) {
+    try {
+      const raw = sessionStorage.getItem(key);
+      if (raw) return JSON.parse(raw) as ContactSuggestionsResult;
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
 }
 
 export function exportPage(opts: {
@@ -658,30 +721,7 @@ export async function fetchPetitionsApi() {
   };
 
   const local = readLocal();
-  if (local) {
-    if (!petitionsInflight) {
-      petitionsInflight = apiFetch<Payload>('/api/voter/petitions')
-        .then((data) => {
-          const payload = {
-            petitions: data.petitions ?? [],
-            groups: data.groups ?? [],
-          };
-          try {
-            const raw = JSON.stringify({ at: Date.now(), data: payload });
-            sessionStorage.setItem(PETITIONS_CACHE_KEY, raw);
-            localStorage.setItem(PETITIONS_CACHE_KEY, raw);
-          } catch {
-            /* ignore */
-          }
-          return payload;
-        })
-        .catch(() => local)
-        .finally(() => {
-          petitionsInflight = null;
-        });
-    }
-    return local;
-  }
+  if (local) return local;
 
   if (!petitionsInflight) {
     petitionsInflight = apiFetch<Payload>('/api/voter/petitions')
@@ -816,11 +856,30 @@ export async function deletePetitionGroupApi(id: number) {
 }
 
 export async function fetchTrackingPolls() {
-  return apiFetch<{
-    polls: TrackingPoll[];
-    imports: TrackingPollImport[];
-    responses: TrackingPollResponse[];
-  }>('/api/voter/tracking-polls');
+  const key = 'tracking_polls_v1';
+  try {
+    const data = await apiFetch<{
+      polls: TrackingPoll[];
+      imports: TrackingPollImport[];
+      responses: TrackingPollResponse[];
+    }>('/api/voter/tracking-polls');
+    try {
+      const raw = JSON.stringify(data);
+      sessionStorage.setItem(key, raw);
+      localStorage.setItem(key, raw);
+    } catch {
+      /* ignore */
+    }
+    return data;
+  } catch (err) {
+    try {
+      const raw = sessionStorage.getItem(key) ?? localStorage.getItem(key);
+      if (raw) return JSON.parse(raw);
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
 }
 
 export async function previewTrackingPollImport(body: {

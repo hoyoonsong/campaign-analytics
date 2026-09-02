@@ -1,5 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
+import {
+  isVoterOriginDown,
+  VOTER_ORIGIN_TIMEOUT_MESSAGE,
+} from '../../_lib/originError.js';
+import { recallCampaignGeo, rememberCampaignGeo } from '../../_lib/voterMemCache.js';
 
 type GeoKind = 'volunteer' | 'yard_sign';
 
@@ -26,19 +31,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   );
 
   if (body.geo_only) {
+    const cached = recallCampaignGeo({ allowStale: isVoterOriginDown() });
+    if (cached?.length) {
+      return json(res, 200, { points: [], campaign_geo: cached, truncated: false });
+    }
+    if (isVoterOriginDown()) {
+      return json(res, 200, { points: [], campaign_geo: [], truncated: false });
+    }
     const campaign_geo = await fetchAllCampaignGeo(ctx.voter);
+    rememberCampaignGeo(campaign_geo);
     return json(res, 200, { points: [], campaign_geo, truncated: false });
   }
 
+  if (isVoterOriginDown()) {
+    const cached = recallCampaignGeo({ allowStale: true });
+    if (cached?.length) {
+      return json(res, 200, {
+        points: [],
+        campaign_geo: cached,
+        truncated: false,
+      });
+    }
+    return json(res, 503, { error: VOTER_ORIGIN_TIMEOUT_MESSAGE });
+  }
+
+  const cachedGeo = recallCampaignGeo();
   const [{ data, error }, geoRes] = await Promise.all([
     ctx.voter.rpc('voter_map_points', {
       filters: body.filters ?? {},
       lim: body.limit ?? 2500,
     }),
-    fetchAllCampaignGeo(ctx.voter),
+    cachedGeo?.length
+      ? Promise.resolve(cachedGeo as CampaignGeoPoint[])
+      : fetchAllCampaignGeo(ctx.voter),
   ]);
 
   if (error) return json(res, 500, { error: error.message });
+
+  if (!cachedGeo?.length && geoRes.length) rememberCampaignGeo(geoRes);
 
   return json(res, 200, {
     ...(data as Record<string, unknown>),

@@ -2,21 +2,24 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
 import { buildLeanSyncPayload, campaignAdminClient } from '../../_lib/campaign.js';
 import { enrichSearchRows } from '../../_lib/enrichSearch.js';
+import { isVoterOriginDown } from '../../_lib/originError.js';
 
 /** Populate lean geo pins from FormHandler when nearby filters need them. */
 async function ensureLeanGeo(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   voter: { from: (t: string) => any; rpc: (fn: string, args?: object) => any },
 ) {
-  const { count, error } = await voter
+  if (isVoterOriginDown()) return;
+  const { data, error } = await voter
     .from('campaign_geo_points')
-    .select('*', { count: 'exact', head: true });
+    .select('source_id')
+    .limit(1);
   if (error) {
     // eslint-disable-next-line no-console
-    console.warn('[search] geo count failed', error.message);
+    console.warn('[search] geo probe failed', error.message);
     return;
   }
-  if ((count ?? 0) > 0) return;
+  if (data?.length) return;
 
   try {
     const campaign = campaignAdminClient();
@@ -63,7 +66,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (needsNearby) {
     await ensureLeanGeo(ctx.voter);
   }
-  if (filters.possible_duplicates === true) {
+  if (filters.possible_duplicates === true && !isVoterOriginDown()) {
     const { error: dupErr } = await ctx.voter.rpc('ensure_possible_duplicates');
     if (dupErr && !/does not exist|schema cache/i.test(dupErr.message)) {
       return json(res, 500, { error: dupErr.message });
@@ -87,7 +90,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   };
 
   try {
-    const rows = await enrichSearchRows(ctx.voter, payload.rows ?? []);
+    const rows = await enrichSearchRows(ctx.voter, payload.rows ?? [], {
+      nearby: needsNearby,
+    });
     return json(res, 200, { ...payload, rows });
   } catch (err) {
     // Enrichment is best-effort; never fail the search itself.

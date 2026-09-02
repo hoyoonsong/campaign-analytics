@@ -58,22 +58,16 @@ async function idbPut(county: string, payload: CountyCoordPayload) {
   }
 }
 
-/** Load county voter coords from IndexedDB, or the server snapshot if stale/missing. */
+/** Load county voter coords from IndexedDB first. Network is optional. */
 export async function loadCountyMapCoords(
   county: string,
 ): Promise<CountyCoordPayload & { fromCache: boolean }> {
   const cached = await idbGet(county);
-  const snap = await fetchMapSnapshot(county, cached?.version ?? null);
-
-  if (snap.unchanged && cached && cached.ids.length === (snap.count ?? cached.ids.length)) {
+  if (cached?.ids.length) {
     return { ...cached, fromCache: true };
   }
 
-  if (snap.unchanged && !cached) {
-    const fresh = await fetchMapSnapshot(county, null);
-    return storeSnap(county, fresh, false);
-  }
-
+  const snap = await fetchMapSnapshot(county, null);
   return storeSnap(county, snap, false);
 }
 

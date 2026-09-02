@@ -160,6 +160,8 @@ export function VoterMap({
 
   // Drop stray voter coords outside the county (they blow out the zoom).
   const voterCount = coords?.ids.length ?? 0;
+  const countyTotal = focusCounty ? countyCounts[focusCounty] ?? 0 : 0;
+  const headerVoters = voterCount > 0 ? voterCount : countyTotal;
 
   const localGeo = useMemo(() => {
     if (!focusCounty || !focusBounds) return [] as CampaignMapPin[];
@@ -194,7 +196,7 @@ export function VoterMap({
       (pinsLoading && layers.voters
         ? ' · plotting voters…'
         : layers.voters
-          ? ` · ${voterCount.toLocaleString()} voter${voterCount === 1 ? '' : 's'}`
+          ? ` · ${headerVoters.toLocaleString()} voter${headerVoters === 1 ? '' : 's'}`
           : '') +
       (presencePins.length
         ? ` · ${yardOnlyCount} yard signs · ${volOnlyCount} volunteers` +

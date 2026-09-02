@@ -3,21 +3,24 @@ import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
 import { buildLeanSyncPayload, campaignAdminClient } from '../../_lib/campaign.js';
 import { enrichSearchRows } from '../../_lib/enrichSearch.js';
 import { logActivityServer } from '../../_lib/log.js';
+import { isVoterOriginDown } from '../../_lib/originError.js';
 
 /** Populate lean geo pins from FormHandler when nearby filters need them. */
 async function ensureLeanGeo(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   voter: { from: (t: string) => any; rpc: (fn: string, args?: object) => any },
 ) {
-  const { count, error } = await voter
+  if (isVoterOriginDown()) return;
+  const { data, error } = await voter
     .from('campaign_geo_points')
-    .select('*', { count: 'exact', head: true });
+    .select('source_id')
+    .limit(1);
   if (error) {
     // eslint-disable-next-line no-console
-    console.warn('[export] geo count failed', error.message);
+    console.warn('[export] geo probe failed', error.message);
     return;
   }
-  if ((count ?? 0) > 0) return;
+  if (data?.length) return;
 
   try {
     const campaign = campaignAdminClient();

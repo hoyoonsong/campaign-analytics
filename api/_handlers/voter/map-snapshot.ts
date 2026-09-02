@@ -1,5 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
+import {
+  isVoterOriginDown,
+  VOTER_ORIGIN_TIMEOUT_MESSAGE,
+} from '../../_lib/originError.js';
 
 type SnapshotBody = {
   county?: string;
@@ -21,6 +25,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     typeof body.have_version === 'number' && Number.isFinite(body.have_version)
       ? Math.trunc(body.have_version)
       : null;
+
+  if (isVoterOriginDown()) {
+    return json(res, 503, { error: VOTER_ORIGIN_TIMEOUT_MESSAGE });
+  }
 
   const { data, error } = await ctx.voter.rpc('voter_map_county_snapshot', {
     p_county: county,

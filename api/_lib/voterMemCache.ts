@@ -4,6 +4,10 @@ let analytics: Record<string, unknown> | null = null;
 let petitions: { petitions: unknown[]; groups: unknown[] } | null = null;
 let filterOptions: Record<string, unknown> | null = null;
 let syncState: Record<string, unknown> | null = null;
+let campaignGeo: unknown[] | null = null;
+let campaignGeoAt = 0;
+const CAMPAIGN_GEO_TTL_MS = 120_000;
+let tracking: Record<string, unknown> | null = null;
 
 export function rememberAnalytics(data: Record<string, unknown> | null) {
   if (data && Array.isArray(data.petition_combos)) analytics = data;
@@ -40,4 +44,27 @@ export function rememberSyncState(data: Record<string, unknown> | null) {
 
 export function recallSyncState() {
   return syncState;
+}
+
+export function rememberCampaignGeo(points: unknown[] | null) {
+  if (Array.isArray(points) && points.length) {
+    campaignGeo = points;
+    campaignGeoAt = Date.now();
+  }
+}
+
+export function recallCampaignGeo(opts?: { allowStale?: boolean }) {
+  if (!campaignGeo) return null;
+  if (!opts?.allowStale && Date.now() - campaignGeoAt > CAMPAIGN_GEO_TTL_MS) {
+    return null;
+  }
+  return campaignGeo;
+}
+
+export function rememberTracking(data: Record<string, unknown> | null) {
+  if (data && Array.isArray(data.polls)) tracking = data;
+}
+
+export function recallTracking() {
+  return tracking;
 }

@@ -6,7 +6,7 @@ import {
   refreshPresenceBestEffort,
 } from '../../_lib/leanSyncFallback.js';
 import { isVoterOriginDown, isVoterOriginTimeout } from '../../_lib/originError.js';
-import { recallSyncState, rememberSyncState } from '../../_lib/voterMemCache.js';
+import { recallSyncState, rememberCampaignGeo, rememberSyncState } from '../../_lib/voterMemCache.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
@@ -32,6 +32,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method !== 'POST') {
     return json(res, 405, { error: 'Method not allowed' });
+  }
+
+  if (isVoterOriginDown()) {
+    return json(res, 503, {
+      error:
+        'Voter database is recovering. Skip FormHandler sync until it is back — do not retry immediately.',
+    });
   }
 
   const recomputeTags = (() => {
@@ -76,6 +83,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       syncResult = leanData;
     }
 
+    rememberCampaignGeo(payload.geo);
+
     let tagsResult: unknown = null;
     if (recomputeTags) {
       const { data, error } = await ctx.voter.rpc('recompute_supporter_tags');
@@ -88,7 +97,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    const presenceCache = await refreshPresenceBestEffort(ctx.voter);
+    const presenceCache = isVoterOriginDown()
+      ? { skipped: true }
+      : await refreshPresenceBestEffort(ctx.voter);
 
     const { data: state } = await ctx.voter
       .from('campaign_sync_state')

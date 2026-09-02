@@ -28,7 +28,6 @@ import {
   fetchAnalytics,
   fetchFilterOptions,
   fetchMapCampaignGeo,
-  fetchMapPoints,
   syncCampaignIndexes,
 } from "../lib/api";
 import { loadCountyMapCoords } from "../lib/mapCoordsCache";
@@ -163,7 +162,12 @@ export default function Analytics() {
       return res.state;
     } catch (err) {
       if (!opts?.quiet) {
-        setError(err instanceof Error ? err.message : "Campaign sync failed");
+        const msg = err instanceof Error ? err.message : "Campaign sync failed";
+        if (/timed out|522|unreachable/i.test(msg)) {
+          setSyncNote("Database is busy — skip sync until it recovers.");
+        } else {
+          setError(msg);
+        }
       }
       return null;
     } finally {
@@ -187,7 +191,7 @@ export default function Analytics() {
           setError(null);
         })
         .catch((err: Error) => {
-          if (active) setError(err.message);
+          if (active && !summary) setError(err.message);
         })
         .finally(() => {
           if (active) setLoading(false);
@@ -200,18 +204,20 @@ export default function Analytics() {
   }, [filters, reloadToken]);
 
   useEffect(() => {
-    if (!summary) return;
+    if (!filtersOpen) return;
     void fetchFilterOptions()
       .then((o) => setOptions(mergeOptions(o)))
       .catch(() => setOptions(EMPTY_FILTER_OPTIONS));
-  }, [summary]);
+  }, [filtersOpen]);
 
   useEffect(() => {
-    setCoords(null);
-    setCampaignGeo([]);
-    setTruncated(false);
     setMapError(null);
-    if (!focusCounty) return;
+    if (!focusCounty) {
+      setCoords(null);
+      setCampaignGeo([]);
+      setTruncated(false);
+      return;
+    }
 
     let active = true;
     setPinsLoading(true);
@@ -221,7 +227,7 @@ export default function Analytics() {
           if (active) setCampaignGeo(geo.campaign_geo ?? []);
         })
         .catch(() => {
-          /* voter snapshot may still succeed */
+          /* keep last pins */
         });
 
       void (async () => {
@@ -230,40 +236,13 @@ export default function Analytics() {
           if (!active) return;
           setCoords(packed);
           setTruncated(false);
-        } catch (err) {
-          try {
-            const data = await fetchMapPoints(
-              { ...emptyFilters(), county: [focusCounty] },
-              2500,
+          setMapError(null);
+        } catch {
+          if (active) {
+            setCoords(null);
+            setMapError(
+              "Voter pins for this county aren’t loaded yet. County shading still shows the totals.",
             );
-            if (!active) return;
-            const pts = data.points ?? [];
-            setCoords({
-              version: 0,
-              ids: pts.map((p) => p.id),
-              lat: pts.map((p) => p.lat),
-              lng: pts.map((p) => p.lng),
-            });
-            setTruncated(!!data.truncated || pts.length >= 2500);
-            if (data.campaign_geo?.length) {
-              setCampaignGeo(data.campaign_geo);
-            }
-            const msg = err instanceof Error ? err.message : "";
-            if (!/not installed|0053|schema cache/i.test(msg)) {
-              setMapError(
-                msg || "Could not load the full county map; showing a sample.",
-              );
-            }
-          } catch (fallbackErr: unknown) {
-            if (active) {
-              setMapError(
-                fallbackErr instanceof Error
-                  ? fallbackErr.message
-                  : err instanceof Error
-                    ? err.message
-                    : "Map failed",
-              );
-            }
           }
         } finally {
           if (active) setPinsLoading(false);
@@ -853,7 +832,7 @@ export default function Analytics() {
                 </p>
               </div>
               {mapError && focusCounty ? (
-                <Alert variant="error">{mapError}</Alert>
+                <Alert variant="warning">{mapError}</Alert>
               ) : null}
               <VoterMap
                 countyCounts={countyCounts}

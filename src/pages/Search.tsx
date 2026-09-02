@@ -156,10 +156,11 @@ export default function Search() {
   }, []);
 
   useEffect(() => {
+    if (!filtersOpen) return;
     void fetchFilterOptions()
       .then((o) => setOptions(mergeOptions(o)))
       .catch(() => setOptions(EMPTY_FILTER_OPTIONS));
-  }, []);
+  }, [filtersOpen]);
 
   useEffect(() => {
     let active = true;
@@ -174,10 +175,11 @@ export default function Search() {
         })
         .catch((err: Error) => {
           if (!active) return;
-          // Never leave previous unfiltered rows looking like a successful filter.
-          setRows([]);
-          setTotal(0);
           setError(err.message);
+          if (!/timed out|522|unreachable/i.test(err.message)) {
+            setRows([]);
+            setTotal(0);
+          }
         })
         .finally(() => {
           if (active) setLoading(false);

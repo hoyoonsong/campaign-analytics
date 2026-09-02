@@ -323,7 +323,7 @@ function resolveTagUniverses(dbUniverses: TagUniverse[]): TagUniverse[] {
 export async function enrichSearchRows(
   voter: SupabaseClient,
   rows: Array<Record<string, unknown>>,
-  opts?: { nearbyMiles?: number | null; geocode?: boolean },
+  opts?: { nearbyMiles?: number | null; geocode?: boolean; nearby?: boolean },
 ): Promise<Array<Record<string, unknown>>> {
   if (!rows.length) return rows;
   void opts?.nearbyMiles;
@@ -349,7 +349,9 @@ export async function enrichSearchRows(
           )
           .in('id', ids)
       : Promise.resolve({ data: [] as unknown[] }),
-    loadLeanGeo(voter),
+    opts?.nearby
+      ? loadLeanGeo(voter)
+      : Promise.resolve([] as GeoPoint[]),
   ]);
 
   const tagUniverses = needsTagCompute
