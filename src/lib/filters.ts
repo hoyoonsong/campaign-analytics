@@ -5,6 +5,7 @@ import type {
   SignedPetitionKey,
   VoterFilters,
 } from './types';
+import { absenteeLabel } from './absentee';
 import { petitionLabel } from './petitions';
 import { summarizeAnyOfRule } from './supporterPresets';
 
@@ -28,6 +29,10 @@ export function emptyFilters(): VoterFilters {
     support_score_min: null,
     support_score_max: null,
     signed: [],
+    absentee: [],
+    absentee_status: [],
+    absentee_min: null,
+    absentee_min_of: [],
     signed_any: null,
     signed_all_core: null,
     signed_min: null,
@@ -75,6 +80,10 @@ export function toFilterPayload(f: VoterFilters): Record<string, unknown> {
   if (f.support_score_min != null) out.support_score_min = f.support_score_min;
   if (f.support_score_max != null) out.support_score_max = f.support_score_max;
   put('signed', f.signed);
+  put('absentee', f.absentee);
+  put('absentee_status', f.absentee_status);
+  if (f.absentee_min != null && f.absentee_min > 0) out.absentee_min = f.absentee_min;
+  put('absentee_min_of', f.absentee_min_of);
   if (f.signed_any === true) out.signed_any = true;
   if (f.signed_all_core === true) out.signed_all_core = true;
   if (f.signed_min != null && f.signed_min > 0) out.signed_min = f.signed_min;
@@ -119,6 +128,8 @@ export function toFilterPayload(f: VoterFilters): Record<string, unknown> {
   put('exclude_state', ex.state);
   put('exclude_status', ex.status);
   put('exclude_signed', ex.signed);
+  put('exclude_absentee', ex.absentee);
+  put('exclude_absentee_status', ex.absentee_status);
   put('exclude_supporter_tag', ex.supporter_tag);
   put('exclude_alignment_label', ex.alignment_label);
   put('exclude_yard_sign', ex.yard_sign);
@@ -151,6 +162,8 @@ export function filtersActive(f: VoterFilters): boolean {
 
 const ARRAY_EXCLUDE_KEYS: ExcludeAttrKey[] = [
   'signed',
+  'absentee',
+  'absentee_status',
   'supporter_tag',
   'alignment_label',
   'yard_sign',
@@ -294,6 +307,18 @@ export function summarizeFilters(f: VoterFilters): string[] {
     const labels = f.signed.map((k) => petitionLabel(k));
     parts.push(`Signed: ${labels.join(' + ')}`);
   }
+  if (f.absentee?.length) {
+    parts.push(`Absentee: ${f.absentee.map((k) => absenteeLabel(k)).join(' + ')}`);
+  }
+  if (f.absentee_min != null && f.absentee_min > 0) {
+    const of = f.absentee_min_of?.length
+      ? ` of ${f.absentee_min_of.map((k) => absenteeLabel(k)).join(', ')}`
+      : '';
+    parts.push(`Absentee ≥${f.absentee_min}${of}`);
+  }
+  if (f.absentee_status?.length) {
+    parts.push(`Absentee status: ${f.absentee_status.join(', ')}`);
+  }
   if (f.signed_any) parts.push('Signed any petition');
   if (f.signed_all_core) parts.push('Signed all three core petitions');
   if (f.signed_min != null && f.signed_min > 0) {
@@ -347,6 +372,12 @@ export function summarizeFilters(f: VoterFilters): string[] {
   if (ex.signed?.length) {
     const labels = ex.signed.map((k) => petitionLabel(k));
     parts.push(`Exclude signed: ${labels.join(', ')}`);
+  }
+  if (ex.absentee?.length) {
+    parts.push(`Exclude absentee: ${ex.absentee.map((k) => absenteeLabel(k)).join(', ')}`);
+  }
+  if (ex.absentee_status?.length) {
+    parts.push(`Exclude absentee status: ${ex.absentee_status.join(', ')}`);
   }
   tag('Exclude tag', ex.supporter_tag);
   tag('Exclude county', ex.county);

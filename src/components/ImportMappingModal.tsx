@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { VOTER_FIELDS } from '../lib/types';
 import type { Petition } from '../lib/petitions';
+import type { AbsenteeElection } from '../lib/absentee';
 
 const PREVIEW_ROWS = 5;
 export const PETITION_TARGET_PREFIX = 'petition:';
+export const ABSENTEE_TARGET_PREFIX = 'absentee:';
 
 export function petitionTargetKey(slug: string) {
   return `${PETITION_TARGET_PREFIX}${slug}`;
@@ -14,6 +16,44 @@ export function slugFromPetitionTarget(key: string): string | null {
   return key.startsWith(PETITION_TARGET_PREFIX)
     ? key.slice(PETITION_TARGET_PREFIX.length)
     : null;
+}
+
+export type AbsenteeTargetField =
+  | 'status'
+  | 'requested_at'
+  | 'issued_at'
+  | 'returned_at';
+
+export function absenteeTargetKey(slug: string) {
+  return `${ABSENTEE_TARGET_PREFIX}${slug}`;
+}
+
+export function absenteeFieldTargetKey(slug: string, field: AbsenteeTargetField) {
+  return field === 'status'
+    ? absenteeTargetKey(slug)
+    : `${ABSENTEE_TARGET_PREFIX}${slug}:${field}`;
+}
+
+export function parseAbsenteeTarget(
+  key: string,
+): { slug: string; field: AbsenteeTargetField } | null {
+  if (!key.startsWith(ABSENTEE_TARGET_PREFIX)) return null;
+  const rest = key.slice(ABSENTEE_TARGET_PREFIX.length);
+  if (!rest) return null;
+  for (const field of ['requested_at', 'issued_at', 'returned_at'] as const) {
+    const suffix = `:${field}`;
+    if (rest.endsWith(suffix)) {
+      const slug = rest.slice(0, -suffix.length);
+      return slug ? { slug, field } : null;
+    }
+  }
+  if (rest.includes(':')) return null;
+  return { slug: rest, field: 'status' };
+}
+
+export function slugFromAbsenteeTarget(key: string): string | null {
+  const parsed = parseAbsenteeTarget(key);
+  return parsed?.field === 'status' ? parsed.slug : null;
 }
 
 export interface ImportTarget {
@@ -54,6 +94,9 @@ function groupFor(key: string): string {
   if (['party', 'voter_registered', 'status'].includes(key)) return 'Registration';
   if (key.startsWith('sig_') || key.startsWith(PETITION_TARGET_PREFIX)) {
     return 'Signatures';
+  }
+  if (key.startsWith(ABSENTEE_TARGET_PREFIX) || key.startsWith('absentee_')) {
+    return 'Absentee';
   }
   if (
     ['volunteer_interest', 'yard_sign', 'support_score', 'newsletter', 'legacy_volunteer'].includes(
@@ -152,6 +195,78 @@ export function looksLikePetitionHeader(header: string): boolean {
   return false;
 }
 
+export function looksLikeAbsenteeHeader(header: string): boolean {
+  const leaf = headerLeaf(header).toLowerCase();
+  return /\b(absentee|ballot|vote.?by.?mail|vbm|early.?vot)\b/.test(leaf);
+}
+
+function absenteeTargetsFrom(e: AbsenteeElection, alone: boolean): ImportTarget[] {
+  const name = e.short_label || e.label;
+  const slugWords = e.slug.replace(/_/g, ' ');
+  const labelWords = e.label.toLowerCase();
+  return [
+    {
+      key: absenteeFieldTargetKey(e.slug, 'status'),
+      label: `${name} — status`,
+      group: 'Absentee',
+      aliases: [
+        e.slug,
+        slugWords,
+        labelWords,
+        `${name} status`,
+        `${slugWords} status`,
+        `${labelWords} status`,
+        ...(alone
+          ? ['absentee', 'absentee ballot', 'ballot status', 'absentee status', 'vbm']
+          : []),
+      ],
+    },
+    {
+      key: absenteeFieldTargetKey(e.slug, 'requested_at'),
+      label: `${name} — requested`,
+      group: 'Absentee',
+      aliases: [
+        `${name} requested`,
+        `${slugWords} requested`,
+        `${labelWords} requested`,
+        `${name} request date`,
+        `${slugWords} application date`,
+        ...(alone ? ['requested', 'request date', 'application date', 'absentee requested'] : []),
+      ],
+    },
+    {
+      key: absenteeFieldTargetKey(e.slug, 'issued_at'),
+      label: `${name} — issued / mailed`,
+      group: 'Absentee',
+      aliases: [
+        `${name} issued`,
+        `${name} mailed`,
+        `${slugWords} issued`,
+        `${slugWords} mailed`,
+        `${labelWords} issued`,
+        `${labelWords} mailed`,
+        `${name} sent`,
+        ...(alone ? ['issued', 'issued date', 'sent date', 'mailed date', 'mailed'] : []),
+      ],
+    },
+    {
+      key: absenteeFieldTargetKey(e.slug, 'returned_at'),
+      label: `${name} — returned`,
+      group: 'Absentee',
+      aliases: [
+        `${name} returned`,
+        `${name} received`,
+        `${slugWords} returned`,
+        `${labelWords} returned`,
+        `${name} received date`,
+        ...(alone
+          ? ['returned', 'returned date', 'received date', 'accepted date', 'received']
+          : []),
+      ],
+    },
+  ];
+}
+
 function petitionTargetFrom(p: Petition): ImportTarget {
   return {
     key: petitionTargetKey(p.slug),
@@ -172,9 +287,11 @@ export function ImportMappingModal({
   headers,
   sampleRows,
   petitions = [],
+  elections = [],
   targets: targetsOverride,
   extraTargets = [],
   onCreatePetition,
+  onCreateElection,
   onCancel,
   onConfirm,
 }: {
@@ -183,13 +300,16 @@ export function ImportMappingModal({
   headers: string[];
   sampleRows: string[][];
   petitions?: Petition[];
+  elections?: AbsenteeElection[];
   targets?: ImportTarget[];
   extraTargets?: ImportTarget[];
   onCreatePetition?: (label: string) => Promise<Petition | null>;
+  onCreateElection?: (label: string) => Promise<AbsenteeElection | null>;
   onCancel: () => void;
   onConfirm: (mapping: Record<string, string>) => void | Promise<void>;
 }) {
   const [createdPetitions, setCreatedPetitions] = useState<Petition[]>([]);
+  const [createdElections, setCreatedElections] = useState<AbsenteeElection[]>([]);
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const touched = useRef(new Set<string>());
@@ -201,6 +321,14 @@ export function ImportMappingModal({
       ...createdPetitions.filter((p) => !seen.has(p.slug)),
     ];
   }, [petitions, createdPetitions]);
+
+  const allElections = useMemo(() => {
+    const seen = new Set(elections.map((e) => e.slug));
+    return [
+      ...elections,
+      ...createdElections.filter((e) => !seen.has(e.slug)),
+    ];
+  }, [elections, createdElections]);
 
   const voterTargets = useMemo(() => {
     const base = VOTER_IMPORT_TARGETS.filter((t) => !t.key.startsWith('sig_'));
@@ -224,8 +352,12 @@ export function ImportMappingModal({
       const t = sigs.find((s) => s.key === petitionTargetKey(slug));
       if (t) t.aliases.push(...aliasesFor(f.key, f.label));
     }
-    return [...base, ...sigs];
-  }, [allPetitions]);
+    const alone = allElections.length === 1;
+    const abs: ImportTarget[] = allElections.flatMap((e) =>
+      absenteeTargetsFrom(e, alone),
+    );
+    return [...base, ...sigs, ...abs];
+  }, [allPetitions, allElections, onCreateElection]);
 
   const targets = targetsOverride ?? [...voterTargets, ...extraTargets];
 
@@ -251,7 +383,9 @@ export function ImportMappingModal({
   useEffect(() => {
     setColMap((prev) => {
       const used = new Set(
-        Object.values(prev).filter((v) => v && v !== '__new_petition__'),
+        Object.values(prev).filter(
+          (v) => v && v !== '__new_petition__' && v !== '__new_election__',
+        ),
       );
       let changed = false;
       const next = { ...prev };
@@ -300,11 +434,14 @@ export function ImportMappingModal({
   const unmappedPetitionHeaders = headers.filter(
     (h) => !colMap[h] && looksLikePetitionHeader(h),
   );
+  const unmappedAbsenteeHeaders = headers.filter(
+    (h) => !colMap[h] && looksLikeAbsenteeHeader(h),
+  );
 
   const toTargetMapping = (): Record<string, string> => {
     const out: Record<string, string> = {};
     for (const [header, target] of Object.entries(colMap)) {
-      if (!target || target === '__new_petition__') continue;
+      if (!target || target === '__new_petition__' || target === '__new_election__') continue;
       out[target] = header;
     }
     return out;
@@ -338,6 +475,65 @@ export function ImportMappingModal({
     }
   };
 
+  const applyCreatedElection = (header: string, created: AbsenteeElection) => {
+    setCreatedElections((cur) =>
+      cur.some((e) => e.slug === created.slug) ? cur : [...cur, created],
+    );
+    touched.current.add(header);
+    const leaf = headerLeaf(header).toLowerCase();
+    const field: AbsenteeTargetField = /return|receiv|accept/.test(leaf)
+      ? 'returned_at'
+      : /issu|mail|sent/.test(leaf)
+        ? 'issued_at'
+        : /request|appl/.test(leaf)
+          ? 'requested_at'
+          : 'status';
+    setColMap((m) => ({
+      ...m,
+      [header]: absenteeFieldTargetKey(created.slug, field),
+    }));
+  };
+
+  const createElectionForHeader = async (header: string, suggested: string) => {
+    if (!onCreateElection) return;
+    const label = window.prompt('New absentee election name', suggested);
+    if (!label?.trim()) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const created = await onCreateElection(label.trim());
+      if (!created?.slug) {
+        setCreateError('Could not create election.');
+        return;
+      }
+      applyCreatedElection(header, created);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Could not create election');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const addUnmappedAbsentee = async () => {
+    if (!onCreateElection || unmappedAbsenteeHeaders.length === 0) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      for (const h of unmappedAbsenteeHeaders) {
+        const created = await onCreateElection(headerLeaf(h));
+        if (!created?.slug) {
+          setCreateError(`Could not create election from “${headerLeaf(h)}”.`);
+          break;
+        }
+        applyCreatedElection(h, created);
+      }
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Could not create election');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const addUnmappedPetitions = async () => {
     if (!onCreatePetition || unmappedPetitionHeaders.length === 0) return;
     setCreating(true);
@@ -363,6 +559,10 @@ export function ImportMappingModal({
       await createForHeader(header, headerLeaf(header));
       return;
     }
+    if (value === '__new_election__' && onCreateElection) {
+      await createElectionForHeader(header, headerLeaf(header));
+      return;
+    }
     touched.current.add(header);
     setColMap((m) => ({ ...m, [header]: value }));
   };
@@ -374,8 +574,9 @@ export function ImportMappingModal({
       (acc[g] ??= []).push(t);
     }
     if (onCreatePetition && !acc.Signatures) acc.Signatures = [];
+    if (onCreateElection && !acc.Absentee) acc.Absentee = [];
     return acc;
-  }, [targets, onCreatePetition]);
+  }, [targets, onCreatePetition, onCreateElection]);
 
   const body = (
     <div className="fixed inset-0 z-[5000] flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:p-8">
@@ -414,6 +615,25 @@ export function ImportMappingModal({
             </div>
           ) : null}
 
+          {onCreateElection && unmappedAbsenteeHeaders.length > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-900">
+              <p>
+                {unmappedAbsenteeHeaders.length === 1
+                  ? '1 absentee column is set to Ignore.'
+                  : `${unmappedAbsenteeHeaders.length} absentee columns are set to Ignore.`}{' '}
+                Add them as elections so they import.
+              </p>
+              <button
+                type="button"
+                className="btn-secondary shrink-0 text-xs"
+                disabled={creating}
+                onClick={() => void addUnmappedAbsentee()}
+              >
+                {creating ? 'Adding…' : 'Add as elections'}
+              </button>
+            </div>
+          ) : null}
+
           {headers.map((h) => (
             <div
               key={h}
@@ -436,11 +656,23 @@ export function ImportMappingModal({
                     Add as petition
                   </button>
                 ) : null}
+                {!colMap[h] && onCreateElection && looksLikeAbsenteeHeader(h) ? (
+                  <button
+                    type="button"
+                    className="mt-0.5 text-xs font-medium text-brand-700 hover:underline"
+                    disabled={creating}
+                    onClick={() => void createElectionForHeader(h, headerLeaf(h))}
+                  >
+                    Add as election
+                  </button>
+                ) : null}
               </div>
               <select
                 className="input"
                 value={
-                  colMap[h] && colMap[h] !== '__new_petition__'
+                  colMap[h] &&
+                  colMap[h] !== '__new_petition__' &&
+                  colMap[h] !== '__new_election__'
                     ? colMap[h]
                     : ''
                 }
@@ -450,6 +682,7 @@ export function ImportMappingModal({
                 <option value="">— Ignore —</option>
                 {colMap[h] &&
                 colMap[h] !== '__new_petition__' &&
+                colMap[h] !== '__new_election__' &&
                 !targets.some((t) => t.key === colMap[h]) ? (
                   <option value={colMap[h]}>
                     {slugFromPetitionTarget(colMap[h]) || colMap[h]}
@@ -459,6 +692,9 @@ export function ImportMappingModal({
                   <optgroup key={group} label={group}>
                     {group === 'Signatures' && onCreatePetition ? (
                       <option value="__new_petition__">New petition…</option>
+                    ) : null}
+                    {group === 'Absentee' && onCreateElection ? (
+                      <option value="__new_election__">New election…</option>
                     ) : null}
                     {groupTargets.map((t) => (
                       <option

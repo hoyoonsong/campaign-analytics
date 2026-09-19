@@ -24,10 +24,12 @@ import { normalizeImportRow } from '../lib/normalizeImportRow';
 import { usePetitions } from '../lib/petitions';
 import {
   confirmTrackingPollImport,
+  createAbsenteeElectionApi,
   createPetitionApi,
   fetchTrackingPolls,
   importVoters,
 } from '../lib/api';
+import { useAbsenteeElections } from '../lib/absentee';
 import {
   expandMappedPollResponses,
   formatPollDate,
@@ -131,6 +133,11 @@ export default function TrackingPolls() {
     reload: reloadPetitions,
     addLocal: addPetitionLocal,
   } = usePetitions();
+  const {
+    activeElections: elections,
+    reload: reloadElections,
+    addLocal: addElectionLocal,
+  } = useAbsenteeElections();
 
   useEffect(() => {
     let cancelled = false;
@@ -733,6 +740,7 @@ export default function TrackingPolls() {
           headers={mappingJob.headers}
           sampleRows={mappingJob.rows}
           petitions={petitions}
+          elections={elections}
           extraTargets={pollDateTargets(mappingJob.headers)}
           onCreatePetition={async (label) => {
             const { petition } = await createPetitionApi({ label });
@@ -740,6 +748,13 @@ export default function TrackingPolls() {
             addPetitionLocal(petition);
             reloadPetitions();
             return petition;
+          }}
+          onCreateElection={async (label) => {
+            const { election } = await createAbsenteeElectionApi({ label });
+            if (!election?.slug) throw new Error('Could not create election');
+            addElectionLocal(election);
+            reloadElections();
+            return election;
           }}
           onCancel={resetImport}
           onConfirm={(mapping) => applyMapping(mapping)}

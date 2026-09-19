@@ -19,6 +19,11 @@ type Props = {
   /** Open focused on this petition-count (2, 3, …). Null = all super signers. */
   initialCount?: number | null;
   onSelectCombo?: (mask: number) => void;
+  onExportCombo?: (mask: number, count: number) => void;
+  title?: string;
+  description?: string;
+  itemNoun?: string;
+  exactlyPhrase?: string;
 };
 
 function fmt(n: number) {
@@ -32,6 +37,11 @@ export function SuperSignerCombosModal({
   combos,
   initialCount = null,
   onSelectCombo,
+  onExportCombo,
+  title = 'Super signer combinations',
+  description = 'Exclusive lists — each person appears in one row. Click a combination to open it in Search.',
+  itemNoun = 'petitions',
+  exactlyPhrase = 'signed exactly',
 }: Props) {
   const [filter, setFilter] = useState<number | null>(initialCount ?? null);
 
@@ -62,8 +72,8 @@ export function SuperSignerCombosModal({
       open={open}
       onClose={onClose}
       wide
-      title="Super signer combinations"
-      description="Exclusive lists — each person appears in one row. Click a combination to open it in Search."
+      title={title}
+      description={description}
     >
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         <FilterChip
@@ -84,7 +94,7 @@ export function SuperSignerCombosModal({
       <p className="mb-2 text-xs text-slate-500">
         {filter == null
           ? `${fmt(visible.length)} combinations`
-          : `${fmt(visibleTotal)} people signed exactly ${filter} petitions · ${fmt(visible.length)} combinations`}
+          : `${fmt(visibleTotal)} people ${exactlyPhrase} ${filter} ${itemNoun} · ${fmt(visible.length)} combinations`}
       </p>
 
       <ul className="max-h-80 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
@@ -92,35 +102,46 @@ export function SuperSignerCombosModal({
           const members = petitionsInMask(row.mask, petitions);
           return (
             <li key={row.mask}>
-              <button
-                type="button"
-                className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-slate-50"
-                onClick={() => {
-                  onSelectCombo?.(row.mask);
-                  onClose();
-                }}
-              >
-                <span className="flex h-3 min-w-[2.5rem] overflow-hidden rounded-sm">
-                  {members.map((p) => (
-                    <span
-                      key={p.slug}
-                      className="h-full min-w-[6px] flex-1"
-                      style={{ background: colorForBit(p.bit_index) }}
-                    />
-                  ))}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-slate-800">
-                    {comboLabel(row.mask, petitions)}
+              <div className="flex items-center gap-2 px-3 py-2.5">
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left hover:bg-slate-50"
+                  onClick={() => {
+                    onSelectCombo?.(row.mask);
+                    onClose();
+                  }}
+                >
+                  <span className="flex h-3 min-w-[2.5rem] overflow-hidden rounded-sm">
+                    {members.map((p) => (
+                      <span
+                        key={p.slug}
+                        className="h-full min-w-[6px] flex-1"
+                        style={{ background: colorForBit(p.bit_index) }}
+                      />
+                    ))}
                   </span>
-                  <span className="block text-[11px] text-slate-500">
-                    {row.n} petitions
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-slate-800">
+                      {comboLabel(row.mask, petitions)}
+                    </span>
+                    <span className="block text-[11px] text-slate-500">
+                      {row.n} {itemNoun}
+                    </span>
                   </span>
-                </span>
-                <span className="shrink-0 text-sm font-semibold text-slate-900">
-                  {fmt(row.count)}
-                </span>
-              </button>
+                  <span className="shrink-0 text-sm font-semibold text-slate-900">
+                    {fmt(row.count)}
+                  </span>
+                </button>
+                {onExportCombo ? (
+                  <button
+                    type="button"
+                    className="btn-secondary shrink-0 px-2.5 py-1 text-xs"
+                    onClick={() => onExportCombo(row.mask, row.count)}
+                  >
+                    Export CSV
+                  </button>
+                ) : null}
+              </div>
             </li>
           );
         })}

@@ -3,11 +3,13 @@ import { Alert, PageHeader } from '../components/ui';
 import { ImportMappingModal } from '../components/ImportMappingModal';
 import { normalizeImportRow } from '../lib/normalizeImportRow';
 import {
+  createAbsenteeElectionApi,
   createPetitionApi,
   fetchCampaignSyncState,
   importVoters,
   syncCampaignIndexes,
 } from '../lib/api';
+import { useAbsenteeElections } from '../lib/absentee';
 import { usePetitions } from '../lib/petitions';
 import { finalizeImportBatch } from '../lib/importBatches';
 import { parseCsv, rowsToObjects } from '../lib/csv';
@@ -45,6 +47,11 @@ export default function ImportPage() {
     reload: reloadPetitions,
     addLocal: addPetitionLocal,
   } = usePetitions();
+  const {
+    activeElections: elections,
+    reload: reloadElections,
+    addLocal: addElectionLocal,
+  } = useAbsenteeElections();
 
   useEffect(() => {
     void fetchCampaignSyncState()
@@ -275,6 +282,7 @@ export default function ImportPage() {
           headers={headers}
           sampleRows={rawRows}
           petitions={petitions}
+          elections={elections}
           onCreatePetition={async (label) => {
             const { petition } = await createPetitionApi({ label });
             if (!petition?.slug) {
@@ -283,6 +291,15 @@ export default function ImportPage() {
             addPetitionLocal(petition);
             reloadPetitions();
             return petition;
+          }}
+          onCreateElection={async (label) => {
+            const { election } = await createAbsenteeElectionApi({ label });
+            if (!election?.slug) {
+              throw new Error('Could not create election');
+            }
+            addElectionLocal(election);
+            reloadElections();
+            return election;
           }}
           onCancel={() => {
             setPhase('idle');

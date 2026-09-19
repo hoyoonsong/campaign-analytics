@@ -13,6 +13,8 @@ export type SignedPetitionKey = string;
 /** Attributes that can be used in the Exclude Profiles builder (mirrors include filters). */
 export type ExcludeAttrKey =
   | 'signed'
+  | 'absentee'
+  | 'absentee_status'
   | 'supporter_tag'
   | 'alignment_label'
   | 'yard_sign'
@@ -38,6 +40,8 @@ export type ExcludeAttrKey =
 
 export type ExcludeRules = {
   signed?: SignedPetitionKey[];
+  absentee?: string[];
+  absentee_status?: string[];
   /** Exclude people with these supporter tags (supporter / maybe / opposed). */
   supporter_tag?: string[];
   alignment_label?: string[];
@@ -110,6 +114,14 @@ export interface VoterFilters {
   age_max?: number | null;
   support_score_min?: number | null;
   support_score_max?: number | null;
+  /** Must have an absentee ballot row for each selected election slug. */
+  absentee?: string[];
+  /** Ballot status filter (REQUESTED, MAILED, RETURNED, …). */
+  absentee_status?: string[];
+  /** Minimum number of selected absentee elections on file. */
+  absentee_min?: number | null;
+  /** Slugs counted toward `absentee_min`. Defaults to all active elections. */
+  absentee_min_of?: string[];
   /** Must have signed each selected petition. */
   signed?: SignedPetitionKey[];
   signed_any?: boolean | null;

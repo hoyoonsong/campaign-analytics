@@ -10,6 +10,7 @@ const Search = lazy(() => import('./pages/Search'));
 const ImportPage = lazy(() => import('./pages/Import'));
 const Petitions = lazy(() => import('./pages/Petitions'));
 const TrackingPolls = lazy(() => import('./pages/TrackingPolls'));
+const Absentee = lazy(() => import('./pages/Absentee'));
 const Universes = lazy(() => import('./pages/Universes'));
 const ContactSuggestions = lazy(() => import('./pages/ContactSuggestions'));
 const Usage = lazy(() => import('./pages/Usage'));
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="/import" element={<ImportPage />} />
           <Route path="/petitions" element={<Petitions />} />
           <Route path="/tracking" element={<TrackingPolls />} />
+          <Route path="/absentee" element={<Absentee />} />
           <Route path="/universes" element={<Universes />} />
           <Route path="/usage" element={<Usage />} />
           <Route path="/logs" element={<ActivityLogs />} />

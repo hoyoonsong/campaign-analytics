@@ -90,6 +90,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
+  const hasAbsentee = rows.some(
+    (r) => r.absentee && typeof r.absentee === 'object',
+  );
+  if (hasAbsentee) {
+    const { error: absErr } = await ctx.voter.rpc('voter_apply_batch_absentee', {
+      rows,
+      batch_id: batchId,
+    });
+    if (absErr) {
+      return json(res, 500, {
+        error: absErr.message,
+        batch_id: batchId,
+        inserted: result.inserted ?? 0,
+        updated: result.updated ?? 0,
+      });
+    }
+  }
+
   return json(res, 200, {
     inserted: result.inserted ?? 0,
     updated: result.updated ?? 0,

@@ -265,8 +265,13 @@ export default function Search() {
       );
       if (!ok) return;
     } else if (total > 3000) {
+      const parts = Math.max(1, Math.ceil(total / MAX_EXPORT_ROWS));
       const ok = window.confirm(
-        `This will download about ${total.toLocaleString()} rows (capped at ${MAX_EXPORT_ROWS.toLocaleString()}). Large exports can slow the voter database. Continue?`,
+        `This will download about ${total.toLocaleString()} rows` +
+          (parts > 1
+            ? ` in ${parts} files of ${MAX_EXPORT_ROWS.toLocaleString()}`
+            : '') +
+          `. Large lists page slowly so the database stays up — you still get the full filtered list. Continue?`,
       );
       if (!ok) return;
     }
@@ -274,7 +279,7 @@ export default function Search() {
     setError(null);
     setNotice(null);
     try {
-      const { count, truncated } = await downloadVotersCsv({
+      const { count, truncated, files } = await downloadVotersCsv({
         filters,
         filename: `voters-export-${new Date().toISOString().slice(0, 10)}.csv`,
         columns: VOTER_EXPORT_COLS,
@@ -282,12 +287,14 @@ export default function Search() {
       void logActivity({
         action: "export",
         entityType: "voter",
-        metadata: { label: "CSV export", count, truncated },
+        metadata: { label: "CSV export", count, truncated, files },
       });
-      if (truncated) {
+      if (truncated && unfiltered) {
         setNotice(
-          `Export stopped at ${MAX_EXPORT_ROWS.toLocaleString()} rows to protect the database. Add filters for a smaller list.`,
+          `Unfiltered export stopped at ${MAX_EXPORT_ROWS.toLocaleString()} rows. Filter the list to download a complete set.`,
         );
+      } else if (files > 1) {
+        setNotice(`Downloaded ${count.toLocaleString()} people in ${files} files.`);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Export failed");
@@ -350,7 +357,7 @@ export default function Search() {
     const rowTotal = rowsToExport.reduce((s, c) => s + c.count, 0);
     if (rowsToExport.length === 0) return;
     const ok = window.confirm(
-      `This will download ${rowsToExport.length} CSV files (~${rowTotal.toLocaleString()} rows, each file capped at ${MAX_EXPORT_ROWS.toLocaleString()}).\n\nThat many sequential exports can slow the voter database. Continue?`,
+      `This will download ${rowsToExport.length} combination lists (~${rowTotal.toLocaleString()} people). Lists over ${MAX_EXPORT_ROWS.toLocaleString()} split into files with a pause between them so the database stays up.\n\nYou get every person. Continue?`,
     );
     if (!ok) return;
     setExportingAll(true);

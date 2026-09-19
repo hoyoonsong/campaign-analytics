@@ -143,5 +143,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     /* registry may not be applied yet */
   }
 
+  try {
+    const { data: ballotRows } = await ctx.voter
+      .from('voter_absentee_ballots')
+      .select(
+        'status, raw_status, requested_at, issued_at, returned_at, absentee_elections(slug, label, sort_order)',
+      )
+      .eq('voter_id', id);
+    if (Array.isArray(ballotRows)) {
+      voter.absentee_ballots = ballotRows
+        .map((row) => {
+          const e = (
+            row as {
+              absentee_elections?:
+                | { slug?: string; label?: string; sort_order?: number }
+                | { slug?: string; label?: string; sort_order?: number }[];
+            }
+          ).absentee_elections;
+          const el = Array.isArray(e) ? e[0] : e;
+          return {
+            slug: el?.slug ?? '',
+            label: el?.label ?? el?.slug ?? 'Absentee',
+            sort_order: el?.sort_order ?? 0,
+            status: (row as { status?: string }).status ?? 'UNKNOWN',
+            raw_status: (row as { raw_status?: string | null }).raw_status ?? null,
+            requested_at: (row as { requested_at?: string | null }).requested_at ?? null,
+            issued_at: (row as { issued_at?: string | null }).issued_at ?? null,
+            returned_at: (row as { returned_at?: string | null }).returned_at ?? null,
+          };
+        })
+        .filter((s) => s.slug)
+        .sort((a, b) => a.sort_order - b.sort_order);
+    }
+  } catch {
+    /* absentee tables may not be applied yet */
+  }
+
   return json(res, 200, { voter, campaign, nearby });
 }

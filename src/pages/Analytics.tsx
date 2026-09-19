@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Bar,
   BarChart,
@@ -30,6 +30,7 @@ import {
   fetchMapCampaignGeo,
   syncCampaignIndexes,
 } from "../lib/api";
+import { dashboardHeadline, useAbsenteeElections } from "../lib/absentee";
 import { loadCountyMapCoords } from "../lib/mapCoordsCache";
 import { downloadVotersCsv, MAX_EXPORT_ROWS, sleep } from "../lib/exportVotersCsv";
 import { emptyFilters, summarizeFilters } from "../lib/filters";
@@ -108,6 +109,11 @@ export default function Analytics() {
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const { activePetitions, groups: petitionGroups } = usePetitions();
+  const { summary: absenteeSummary } = useAbsenteeElections();
+  const absenteeStats = useMemo(
+    () => dashboardHeadline(absenteeSummary),
+    [absenteeSummary],
+  );
   const fallbackPetitions = useMemo(
     () => petitionsFromAnalyticsSummary(summary),
     [summary],
@@ -366,7 +372,7 @@ export default function Analytics() {
     const rowTotal = rows.reduce((s, c) => s + c.count, 0);
     if (rows.length === 0) return;
     const ok = window.confirm(
-      `This will download ${rows.length} CSV files (~${rowTotal.toLocaleString()} rows, each file capped at ${MAX_EXPORT_ROWS.toLocaleString()}).\n\nThat many sequential exports can slow the voter database. Continue?`,
+      `This will download ${rows.length} combination lists (~${rowTotal.toLocaleString()} people). Lists over ${MAX_EXPORT_ROWS.toLocaleString()} split into files with a pause between them so the database stays up.\n\nYou get every person. Continue?`,
     );
     if (!ok) return;
     setExportingAll(true);
@@ -596,6 +602,23 @@ export default function Analytics() {
                 onClick={() => goSearch({ supporter_tag: ["opposed"] }, "opposed")}
               />
             </div>
+            <Link
+              to="/absentee"
+              className="card flex items-center justify-between px-3 py-3 hover:bg-slate-50"
+            >
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  Absentee ballots
+                </p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
+                  {absenteeStats.total.toLocaleString()}
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  {absenteeStats.returned.toLocaleString()} returned · deeper analysis
+                </p>
+              </div>
+              <span className="text-sm font-medium text-brand-700">Open →</span>
+            </Link>
 
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="card flex items-center justify-between gap-3 px-4 py-3">

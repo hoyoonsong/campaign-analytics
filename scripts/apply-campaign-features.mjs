@@ -83,6 +83,15 @@ const allFiles = [
   'supabase/migrations/0056_fast_universe_tags.sql',
   'supabase/migrations/0057_one_pass_universe_tags.sql',
   'supabase/migrations/0058_tracking_poll_source_party.sql',
+  'supabase/migrations/0059_absentee_ballots.sql',
+  'supabase/migrations/0060_absentee_per_election_dates.sql',
+  'supabase/migrations/0061_absentee_dashboard_aggregates.sql',
+  'supabase/migrations/0062_absentee_dashboard_fast.sql',
+  'supabase/migrations/0063_absentee_combos_and_min.sql',
+  'supabase/migrations/0064_absentee_election_groups.sql',
+  'supabase/migrations/0065_absentee_target_count.sql',
+  'supabase/migrations/0066_absentee_mask_party.sql',
+  'supabase/migrations/0067_absentee_export_fast.sql',
 ];
 
 const applyFrom = process.env.APPLY_FROM || process.argv[2] || '0015';

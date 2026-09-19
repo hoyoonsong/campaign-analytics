@@ -1,9 +1,16 @@
 import { exportPage } from './api';
 import { votersToCsv } from './csv';
+import { filtersActive } from './filters';
 import type { VoterFilters } from './types';
 
-/** Hard cap — full-file downloads of ~177k rows take the voter origin down. */
+/** Hard cap for an unfiltered whole-file dump — that is what took the origin down. */
 export const MAX_EXPORT_ROWS = 20_000;
+
+/** Filtered lists split into this many rows per file so the database can breathe. */
+export const EXPORT_FILE_ROWS = 20_000;
+
+const PAGE_PAUSE_MS = 450;
+const FILE_PAUSE_MS = 1_600;
 
 /** Shared columns for voter + petition combo exports. */
 export const VOTER_EXPORT_COLS = [
@@ -34,6 +41,11 @@ export const VOTER_EXPORT_COLS = [
   'nearby_volunteer_miles',
 ] as const;
 
+export type ExportProgress = {
+  rows: number;
+  fileIndex: number;
+};
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -49,20 +61,60 @@ function downloadBlob(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 2_000);
 }
 
-/** Paginate export RPC and download a single CSV. */
+function partFilename(filename: string, index: number, split: boolean): string {
+  if (!split) return filename;
+  const dot = filename.lastIndexOf('.');
+  const base = dot >= 0 ? filename.slice(0, dot) : filename;
+  const ext = dot >= 0 ? filename.slice(dot) : '.csv';
+  return `${base}-part${index}${ext}`;
+}
+
+function emitCsv(chunks: string[], columns: string[], filename: string) {
+  const body = chunks.length ? chunks.join('\n') : columns.join(',');
+  const blob = new Blob(['\uFEFF' + body], { type: 'text/csv;charset=utf-8' });
+  downloadBlob(blob, filename);
+}
+
+/** Paginate export RPC and download one or more CSVs. */
 export async function downloadVotersCsv(opts: {
   filters: VoterFilters;
   filename: string;
   columns?: readonly string[];
   pageSize?: number;
-}): Promise<{ count: number; truncated: boolean }> {
+  /** Stop after this many rows. Unfiltered dumps default to MAX_EXPORT_ROWS. */
+  maxRows?: number;
+  /** Start a new file after this many rows. `null` keeps everything in one file. */
+  splitEvery?: number | null;
+  /** Skip nearby/tag enrichment so large filtered dumps stay cheap. */
+  lean?: boolean;
+  onProgress?: (progress: ExportProgress) => void;
+}): Promise<{ count: number; truncated: boolean; files: number }> {
   const columns = [...(opts.columns ?? VOTER_EXPORT_COLS)];
-  const chunks: string[] = [];
-  let afterId: number | null = null;
-  let first = true;
-  let total = 0;
-  let truncated = false;
+  const unfiltered = !filtersActive(opts.filters);
+  const maxRows = opts.maxRows ?? (unfiltered ? MAX_EXPORT_ROWS : Number.POSITIVE_INFINITY);
+  const splitEvery =
+    opts.splitEvery === null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(1, opts.splitEvery ?? (unfiltered ? maxRows : EXPORT_FILE_ROWS));
+  const lean = opts.lean ?? !unfiltered;
   const pageSize = Math.min(opts.pageSize ?? 400, 400);
+
+  let chunks: string[] = [];
+  let afterId: number | null = null;
+  let firstInFile = true;
+  let total = 0;
+  let fileRows = 0;
+  let fileIndex = 1;
+  let truncated = false;
+
+  const flush = (moreComing: boolean) => {
+    if (!chunks.length && firstInFile) return;
+    emitCsv(chunks, columns, partFilename(opts.filename, fileIndex, moreComing || fileIndex > 1));
+    chunks = [];
+    firstInFile = true;
+    fileRows = 0;
+    fileIndex += 1;
+  };
 
   for (;;) {
     let page: {
@@ -76,7 +128,8 @@ export async function downloadVotersCsv(opts: {
           filters: opts.filters,
           afterId,
           limit: pageSize,
-          exportedSoFar: total,
+          exportedSoFar: unfiltered ? total : 0,
+          lean,
         });
         page = {
           rows: res.rows as unknown as Record<string, unknown>[],
@@ -86,46 +139,57 @@ export async function downloadVotersCsv(opts: {
         break;
       } catch (err) {
         const msg = err instanceof Error ? err.message : '';
-        if (attempt < 4 && /429|another export/i.test(msg)) {
-          await new Promise((r) => setTimeout(r, 800 * attempt));
+        if (attempt < 6 && /429|another export/i.test(msg)) {
+          await sleep(900 * attempt);
           continue;
         }
         throw err;
       }
     }
+
     const batch = page.rows;
     if (!batch?.length) {
       truncated = truncated || Boolean(page.truncated);
       break;
     }
+
     total += batch.length;
+    fileRows += batch.length;
     truncated = truncated || Boolean(page.truncated);
     const csv = votersToCsv(batch, columns);
-    if (first) {
+    if (firstInFile) {
       chunks.push(csv);
-      first = false;
+      firstInFile = false;
     } else {
       chunks.push(csv.split('\n').slice(1).join('\n'));
     }
-    if (page.next_cursor == null || page.truncated || total >= MAX_EXPORT_ROWS) {
-      truncated = truncated || Boolean(page.truncated);
+
+    opts.onProgress?.({ rows: total, fileIndex });
+
+    const hitCap = total >= maxRows;
+    const hitSplit = fileRows >= splitEvery;
+    const hasMore = page.next_cursor != null && !page.truncated && !hitCap;
+    if (hitSplit || !hasMore) {
+      flush(hasMore);
+      if (!hasMore) break;
+      await sleep(FILE_PAUSE_MS);
+    }
+
+    if (hitCap) {
+      truncated = true;
       break;
     }
     afterId = page.next_cursor;
-    await new Promise((r) => setTimeout(r, 350));
+    await sleep(PAGE_PAUSE_MS);
   }
 
-  if (chunks.length === 0) {
-    // Still emit a header-only file so the export action is visible.
-    chunks.push(columns.map((c) => c).join(','));
+  if (chunks.length) {
+    flush(false);
+  } else if (total === 0) {
+    emitCsv([], columns, opts.filename);
   }
 
-  // BOM so Excel opens UTF-8 correctly (same as FormHandler downloads).
-  const blob = new Blob(['\uFEFF' + chunks.join('\n')], {
-    type: 'text/csv;charset=utf-8',
-  });
-  downloadBlob(blob, opts.filename);
-  return { count: total, truncated };
+  return { count: total, truncated, files: Math.max(1, fileIndex - 1) };
 }
 
 /** Brief pause so browsers allow multiple sequential downloads. */

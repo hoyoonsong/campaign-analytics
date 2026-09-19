@@ -1,4 +1,7 @@
-import { slugFromPetitionTarget } from '../components/ImportMappingModal';
+import {
+  parseAbsenteeTarget,
+  slugFromPetitionTarget,
+} from '../components/ImportMappingModal';
 import { VOTER_FIELDS, type VoterFieldKey } from './types';
 
 const SIG_FIELD_TO_SLUG: Record<string, string> = {
@@ -10,9 +13,17 @@ const SIG_FIELD_TO_SLUG: Record<string, string> = {
   sig_medical_marijuana_valid_code: 'medical_marijuana_valid',
 };
 
+type AbsenteeImportValue = {
+  status?: string;
+  requested_at?: string;
+  issued_at?: string;
+  returned_at?: string;
+};
+
 export function normalizeImportRow(row: Record<string, string>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const signatures: Record<string, string> = {};
+  const absentee: Record<string, AbsenteeImportValue> = {};
 
   for (const field of VOTER_FIELDS) {
     const key = field.key as VoterFieldKey;
@@ -39,8 +50,26 @@ export function normalizeImportRow(row: Record<string, string>): Record<string, 
   for (const [key, raw] of Object.entries(row)) {
     const slug = slugFromPetitionTarget(key);
     if (slug && raw) signatures[slug] = raw;
+    const parsed = parseAbsenteeTarget(key);
+    if (parsed && raw) {
+      const cur = absentee[parsed.slug] ?? {};
+      if (parsed.field === 'status') cur.status = raw;
+      else cur[parsed.field] = raw;
+      absentee[parsed.slug] = cur;
+    }
   }
 
   if (Object.keys(signatures).length) out.signatures = signatures;
+  if (Object.keys(absentee).length) out.absentee = absentee;
+
+  // Legacy single-file dates still apply when an election has no per-column date.
+  for (const dateKey of [
+    'absentee_requested_at',
+    'absentee_issued_at',
+    'absentee_returned_at',
+  ] as const) {
+    const raw = row[dateKey];
+    if (raw) out[dateKey] = raw;
+  }
   return out;
 }

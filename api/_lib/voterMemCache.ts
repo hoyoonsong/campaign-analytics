@@ -8,6 +8,7 @@ let campaignGeo: unknown[] | null = null;
 let campaignGeoAt = 0;
 const CAMPAIGN_GEO_TTL_MS = 120_000;
 let tracking: Record<string, unknown> | null = null;
+let absentee: Record<string, unknown> | null = null;
 
 export function rememberAnalytics(data: Record<string, unknown> | null) {
   if (data && Array.isArray(data.petition_combos)) analytics = data;
@@ -67,4 +68,28 @@ export function rememberTracking(data: Record<string, unknown> | null) {
 
 export function recallTracking() {
   return tracking;
+}
+
+export function rememberAbsentee(data: Record<string, unknown> | null) {
+  if (!data || !Array.isArray(data.elections)) return;
+  const headline = data.headline as { rows?: number; unique_voters?: number } | undefined;
+  const byElection = data.by_election;
+  const hasFacts =
+    (Array.isArray(byElection) && byElection.length > 0) ||
+    Number(headline?.rows) > 0 ||
+    Number(headline?.unique_voters) > 0;
+  if (hasFacts || data.elections.length === 0) absentee = data;
+}
+
+export function recallAbsentee() {
+  if (!absentee) return null;
+  const headline = absentee.headline as { rows?: number; unique_voters?: number } | undefined;
+  const byElection = absentee.by_election;
+  const hasFacts =
+    (Array.isArray(byElection) && byElection.length > 0) ||
+    Number(headline?.rows) > 0 ||
+    Number(headline?.unique_voters) > 0;
+  return hasFacts || (Array.isArray(absentee.elections) && absentee.elections.length === 0)
+    ? absentee
+    : null;
 }

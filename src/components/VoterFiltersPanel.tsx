@@ -6,6 +6,11 @@ import type {
   SignedPetitionKey,
   VoterFilters,
 } from "../lib/types";
+import {
+  ABSENTEE_STATUSES,
+  absenteeStatusLabel,
+  useAbsenteeElections,
+} from "../lib/absentee";
 import { petitionLabel, usePetitions } from "../lib/petitions";
 import {
   addAnyOfRule,
@@ -129,10 +134,15 @@ type AttrGroup = {
 function buildExcludeCatalog(
   opts: FilterOptions,
   petitions: { slug: string; label: string }[],
+  elections: { slug: string; label: string }[],
 ): AttrGroup[] {
   const signedValues = petitions.map((o) => o.slug);
   const signedLabels = Object.fromEntries(
     petitions.map((o) => [o.slug, o.label]),
+  );
+  const absenteeValues = elections.map((o) => o.slug);
+  const absenteeLabels = Object.fromEntries(
+    elections.map((o) => [o.slug, o.label]),
   );
 
   return [
@@ -161,6 +171,28 @@ function buildExcludeCatalog(
           kind: "multi",
           values: signedValues,
           valueLabels: signedLabels,
+        },
+      ],
+    },
+    {
+      id: "absentee",
+      label: "Absentee",
+      attrs: [
+        {
+          key: "absentee",
+          label: "Absentee elections",
+          kind: "multi",
+          values: absenteeValues,
+          valueLabels: absenteeLabels,
+        },
+        {
+          key: "absentee_status",
+          label: "Absentee status",
+          kind: "multi",
+          values: [...ABSENTEE_STATUSES],
+          valueLabels: Object.fromEntries(
+            ABSENTEE_STATUSES.map((s) => [s, absenteeStatusLabel(s)]),
+          ),
         },
       ],
     },
@@ -450,6 +482,7 @@ export function VoterFiltersPanel({
 }) {
   const opts = mergeOptions(options);
   const { activePetitions: petitions } = usePetitions();
+  const { activeElections: elections } = useAbsenteeElections();
   const [draftField, setDraftField] = useState<FilterAnyOfField | "">(
     "",
   );
@@ -830,6 +863,66 @@ export function VoterFiltersPanel({
                   </label>
                 );
               })}
+            </div>
+          </FilterSection>
+        ) : null}
+
+        {matchSection(
+          "absentee",
+          "ballot",
+          "vbm",
+          ...elections.flatMap((e) => [e.label, e.short_label, e.slug]),
+          ...ABSENTEE_STATUSES.map((s) => absenteeStatusLabel(s)),
+        ) ? (
+          <FilterSection
+            title="Absentee ballots"
+            hint="Must have a ballot row for each checked election. Status is optional."
+            defaultOpen={!q}
+            forceOpen={Boolean(q)}
+            badge={
+              (filters.absentee?.length || filters.absentee_status?.length)
+                ? String(
+                    (filters.absentee?.length ?? 0) +
+                      (filters.absentee_status?.length ?? 0),
+                  )
+                : null
+            }
+          >
+            <div className="space-y-2">
+              {elections.map((opt) => (
+                <label
+                  key={opt.slug}
+                  className="flex cursor-pointer items-center gap-2 text-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={(filters.absentee ?? []).includes(opt.slug)}
+                    onChange={() => setMulti("absentee", opt.slug)}
+                    className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  />
+                  <span className="truncate">{opt.label}</span>
+                </label>
+              ))}
+              {elections.length === 0 ? (
+                <p className="text-[11px] text-slate-500">
+                  Add elections on the Absentee page.
+                </p>
+              ) : null}
+              <p className="pt-1 text-[11px] font-medium text-slate-500">Status</p>
+              {ABSENTEE_STATUSES.filter((s) => s !== "UNKNOWN").map((status) => (
+                <label
+                  key={status}
+                  className="flex cursor-pointer items-center gap-2 text-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={(filters.absentee_status ?? []).includes(status)}
+                    onChange={() => setMulti("absentee_status", status)}
+                    className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  />
+                  <span>{absenteeStatusLabel(status)}</span>
+                </label>
+              ))}
             </div>
           </FilterSection>
         ) : null}
@@ -1225,6 +1318,7 @@ export function VoterFiltersPanel({
             filters={filters}
             options={opts}
             petitions={petitions}
+            elections={elections}
             onChange={onChange}
           />
         ) : null}
@@ -1354,16 +1448,18 @@ function ExcludeProfilesSection({
   filters,
   options,
   petitions,
+  elections,
   onChange,
 }: {
   filters: VoterFilters;
   options: FilterOptions;
   petitions: { slug: string; label: string }[];
+  elections: { slug: string; label: string }[];
   onChange: (next: VoterFilters) => void;
 }) {
   const catalog = useMemo(
-    () => buildExcludeCatalog(options, petitions),
-    [options, petitions],
+    () => buildExcludeCatalog(options, petitions, elections),
+    [options, petitions, elections],
   );
   const allAttrs = useMemo(() => flattenAttrs(catalog), [catalog]);
   const attrByKey = useMemo(

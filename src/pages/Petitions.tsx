@@ -20,7 +20,7 @@ import {
 export default function PetitionsPage() {
   const { profile } = useAuth();
   const isAdmin = profile?.role === 'admin';
-  const { petitions, groups, loading, error, reload } = usePetitions();
+  const { petitions, groups, loading, error, reload, addLocal } = usePetitions();
   const [newLabel, setNewLabel] = useState('');
   const [checked, setChecked] = useState<Set<number>>(() => new Set());
   const [groupOpen, setGroupOpen] = useState(false);
@@ -43,7 +43,8 @@ export default function PetitionsPage() {
     setBusy(true);
     setErr(null);
     try {
-      await createPetitionApi({ label: newLabel.trim() });
+      const { petition } = await createPetitionApi({ label: newLabel.trim() });
+      if (petition) addLocal(petition);
       setNewLabel('');
       setMsg('Petition created.');
       clearClientDataCaches();

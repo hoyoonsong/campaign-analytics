@@ -44,6 +44,15 @@ export type VoterProfile = Record<string, unknown> & {
     label: string;
     raw_value?: string | null;
   }>;
+  absentee_ballots?: Array<{
+    slug: string;
+    label: string;
+    status: string;
+    raw_status?: string | null;
+    requested_at?: string | null;
+    issued_at?: string | null;
+    returned_at?: string | null;
+  }>;
 };
 
 function present(v: unknown): boolean {
@@ -171,6 +180,18 @@ export function VoterProfileModal({
   const history = useMemo(() => {
     if (!voter) return [] as { title: string; detail: string }[];
     const items: { title: string; detail: string }[] = [];
+
+    if (voter.absentee_ballots?.length) {
+      for (const b of voter.absentee_ballots) {
+        const dates = [b.requested_at, b.issued_at, b.returned_at]
+          .filter(Boolean)
+          .join(' · ');
+        items.push({
+          title: `Absentee · ${b.label}`,
+          detail: [b.status, b.raw_status, dates].filter(Boolean).join(' · '),
+        });
+      }
+    }
 
     if (voter.petition_signatures?.length) {
       for (const sig of voter.petition_signatures) {

@@ -366,11 +366,15 @@ type PetitionCache = { petitions: Petition[]; groups: PetitionGroup[] };
 let petitionMemory: PetitionCache | null = null;
 let petitionInflight: Promise<PetitionCache> | null = null;
 
-async function loadPetitionsShared(): Promise<PetitionCache> {
-  if (petitionMemory?.petitions.length) return petitionMemory;
+async function loadPetitionsShared(force = false): Promise<PetitionCache> {
+  if (!force && petitionMemory?.petitions.length) return petitionMemory;
+  if (force) {
+    petitionMemory = null;
+    petitionInflight = null;
+  }
   if (!petitionInflight) {
     petitionInflight = import('./api')
-      .then(({ fetchPetitionsApi }) => fetchPetitionsApi())
+      .then(({ fetchPetitionsApi }) => fetchPetitionsApi({ force }))
       .then((data) => {
         const next = {
           petitions: data.petitions ?? [],
@@ -419,7 +423,7 @@ export function usePetitions() {
   const reload = useCallback(() => {
     petitionMemory = null;
     setLoading(true);
-    void loadPetitionsShared()
+    void loadPetitionsShared(true)
       .then((data) => {
         setPetitions(data.petitions);
         setGroups(data.groups);

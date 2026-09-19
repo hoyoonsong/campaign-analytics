@@ -72,12 +72,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       after_id?: number | null;
       limit?: number;
       exported_so_far?: number;
+      lean?: boolean;
     }>(req);
 
     const filters = { ...(body.filters ?? {}) };
     const empty = filtersAreEmpty(filters);
     const afterId = body.after_id ?? null;
     const already = Math.max(0, Number(body.exported_so_far) || 0);
+    const lean = body.lean === true;
+    // Only the unfiltered whole-file dump is hard-capped. Filtered lists
+    // (absentee year groups, combos, Search filters) page to completion.
+    const hardCap = empty ? MAX_ROWS : Number.MAX_SAFE_INTEGER;
 
     if (empty && ctx.profile.role !== 'admin') {
       return json(res, 403, {
@@ -85,7 +90,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           'Filter the list before exporting. Full-file downloads take the voter database down.',
       });
     }
-    if (already >= MAX_ROWS) {
+    if (already >= hardCap) {
       return json(res, 200, { rows: [], next_cursor: null, truncated: true });
     }
 
@@ -110,7 +115,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const lim = Math.min(
       MAX_PAGE,
       Math.max(1, Number(body.limit) || MAX_PAGE),
-      MAX_ROWS - already,
+      Math.max(1, hardCap - already),
     );
 
     if (!afterId) {
@@ -139,8 +144,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       next_cursor?: number | null;
     };
     const rowCount = payload.rows?.length ?? 0;
-    const truncated = already + rowCount >= MAX_ROWS;
+    const truncated = already + rowCount >= hardCap;
     const nextCursor = truncated ? null : payload.next_cursor ?? null;
+
+    if (lean) {
+      return json(res, 200, { ...payload, next_cursor: nextCursor, truncated });
+    }
 
     try {
       const rows = await enrichSearchRows(ctx.voter, payload.rows ?? []);

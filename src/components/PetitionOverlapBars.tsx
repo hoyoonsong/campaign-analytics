@@ -25,12 +25,24 @@ const PIE_COLORS = [
   "#0e7490",
 ];
 
+export type OverlapBarsCopy = {
+  onlyOne?: string;
+  multi?: string;
+  multiEmpty?: string;
+  modalTitle?: string;
+  modalDescription?: string;
+  itemNoun?: string;
+  exactlyPhrase?: string;
+};
+
 type Props = {
   units: PetitionUnit[];
   combos?: PetitionComboCount[] | null;
   onSelectUnitCombo?: (unitMask: number) => void;
   onSelectPetitionExclusive?: (petition: Petition) => void;
   onSelectSuperSigners?: () => void;
+  onExportCombo?: (mask: number, count: number) => void;
+  copy?: OverlapBarsCopy;
 };
 
 function fmt(n: number) {
@@ -43,7 +55,12 @@ export function PetitionOverlapBars({
   onSelectUnitCombo,
   onSelectPetitionExclusive,
   onSelectSuperSigners,
+  onExportCombo,
+  copy,
 }: Props) {
+  const onlyOne = copy?.onlyOne ?? 'Signed only one';
+  const multi = copy?.multi ?? 'Super signers';
+  const multiEmpty = copy?.multiEmpty ?? 'No overlapping signers.';
   const [comboOpen, setComboOpen] = useState(false);
   const [comboCount, setComboCount] = useState<number | null>(null);
 
@@ -108,7 +125,7 @@ export function PetitionOverlapBars({
     <div className="space-y-4">
       <div>
         <p className="mb-2 text-xs font-medium text-slate-700">
-          Signed only one
+          {onlyOne}
         </p>
 
         <div className="space-y-1.5">
@@ -210,7 +227,7 @@ export function PetitionOverlapBars({
       {units.length >= 2 ? (
         <div>
           <div className="mb-1 flex items-baseline justify-between gap-2">
-            <p className="text-xs font-medium text-slate-700">Super signers</p>
+            <p className="text-xs font-medium text-slate-700">{multi}</p>
             {onSelectSuperSigners ? (
               <button
                 type="button"
@@ -302,7 +319,7 @@ export function PetitionOverlapBars({
             </div>
           ) : (
             <p className="text-[11px] text-slate-400">
-              No overlapping signers.
+              {multiEmpty}
             </p>
           )}
         </div>
@@ -315,6 +332,11 @@ export function PetitionOverlapBars({
         combos={collapsed}
         initialCount={comboCount}
         onSelectCombo={onSelectUnitCombo}
+        onExportCombo={onExportCombo}
+        title={copy?.modalTitle}
+        description={copy?.modalDescription}
+        itemNoun={copy?.itemNoun}
+        exactlyPhrase={copy?.exactlyPhrase}
       />
     </div>
   );

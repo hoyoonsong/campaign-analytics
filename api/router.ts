@@ -20,6 +20,7 @@ const ROUTES: Record<string, () => Promise<{ default: Handler }>> = {
   universes: () => import('./_handlers/voter/universes.js'),
   petitions: () => import('./_handlers/voter/petitions.js'),
   'tracking-polls': () => import('./_handlers/voter/tracking-polls.js'),
+  absentee: () => import('./_handlers/voter/absentee.js'),
   'merge-duplicates': () => import('./_handlers/voter/merge-duplicates.js'),
   'contact-suggestions': () => import('./_handlers/voter/contact-suggestions.js'),
   usage: () => import('./_handlers/voter/usage.js'),

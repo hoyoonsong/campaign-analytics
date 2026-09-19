@@ -17,6 +17,8 @@ import type {
   TrackingPollResponse,
 } from './trackingPoll/types';
 import type { VoterHit } from './trackingPoll/match';
+import type { AbsenteeDashboard, AbsenteeElection, AbsenteeGroup } from './absentee';
+import { normalizeAbsenteeDashboard } from './absentee';
 
 async function authHeaders(): Promise<HeadersInit> {
   const { data } = await supabase.auth.getSession();
@@ -30,6 +32,9 @@ async function authHeaders(): Promise<HeadersInit> {
 
 function sanitizeApiError(raw: string, status: number): string {
   const text = raw.trim();
+  if (status === 401 || /^unauthorized$/i.test(text)) {
+    return 'API rejected the session. Stop other Vite processes, run `npm run dev`, then refresh.';
+  }
   if (
     /<!DOCTYPE html/i.test(text) ||
     /<html[\s>]/i.test(text) ||
@@ -491,6 +496,7 @@ export function exportPage(opts: {
   afterId?: number | null;
   limit?: number;
   exportedSoFar?: number;
+  lean?: boolean;
 }) {
   return apiFetch<{
     rows: VoterRow[];
@@ -503,6 +509,7 @@ export function exportPage(opts: {
       after_id: opts.afterId ?? null,
       limit: opts.limit ?? 400,
       exported_so_far: opts.exportedSoFar ?? 0,
+      lean: opts.lean === true,
     }),
   });
 }
@@ -574,8 +581,53 @@ export function fetchCampaignSyncState() {
   });
 }
 
+const PETITIONS_CACHE_KEY = 'voter_petitions_v1';
+
+type PetitionsPayload = {
+  petitions: Array<{
+    id: number;
+    slug: string;
+    label: string;
+    short_label: string;
+    bit_index: number;
+    sort_order: number;
+    is_default: boolean;
+    is_active: boolean;
+    group_id?: number | null;
+  }>;
+  groups: Array<{
+    id: number;
+    slug: string;
+    label: string;
+    short_label: string;
+    sort_order: number;
+  }>;
+};
+
+let petitionsInflight: Promise<PetitionsPayload> | null = null;
+
+function removeStorageKey(key: string) {
+  try {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function invalidatePetitionsCache() {
+  petitionsInflight = null;
+  removeStorageKey(PETITIONS_CACHE_KEY);
+}
+
 export function clearClientDataCaches() {
-  if (typeof sessionStorage === 'undefined') return;
+  if (typeof sessionStorage === 'undefined' && typeof localStorage === 'undefined') {
+    return;
+  }
   try {
     sessionStorage.removeItem('analytics_summary_empty_v1');
     sessionStorage.removeItem('analytics_summary_empty_v2');
@@ -588,6 +640,8 @@ export function clearClientDataCaches() {
   } catch {
     /* ignore */
   }
+  invalidatePetitionsCache();
+  invalidateAbsenteeCache();
 }
 
 export async function syncCampaignIndexes(opts?: { recompute_tags?: boolean }) {
@@ -662,57 +716,13 @@ export async function fetchFilterOptions() {
   return data;
 }
 
-let petitionsInflight: Promise<{
-  petitions: Array<{
-    id: number;
-    slug: string;
-    label: string;
-    short_label: string;
-    bit_index: number;
-    sort_order: number;
-    is_default: boolean;
-    is_active: boolean;
-    group_id?: number | null;
-  }>;
-  groups: Array<{
-    id: number;
-    slug: string;
-    label: string;
-    short_label: string;
-    sort_order: number;
-  }>;
-}> | null = null;
-
-const PETITIONS_CACHE_KEY = 'voter_petitions_v1';
-
-export async function fetchPetitionsApi() {
-  type Payload = {
-    petitions: Array<{
-      id: number;
-      slug: string;
-      label: string;
-      short_label: string;
-      bit_index: number;
-      sort_order: number;
-      is_default: boolean;
-      is_active: boolean;
-      group_id?: number | null;
-    }>;
-    groups: Array<{
-      id: number;
-      slug: string;
-      label: string;
-      short_label: string;
-      sort_order: number;
-    }>;
-  };
-
-  const readLocal = (): Payload | null => {
+export async function fetchPetitionsApi(opts?: { force?: boolean }) {
+  const readLocal = (): PetitionsPayload | null => {
     if (typeof sessionStorage === 'undefined') return null;
     try {
       const raw = sessionStorage.getItem(PETITIONS_CACHE_KEY) ?? localStorage.getItem(PETITIONS_CACHE_KEY);
       if (!raw) return null;
-      const parsed = JSON.parse(raw) as { data?: Payload };
+      const parsed = JSON.parse(raw) as { data?: PetitionsPayload };
       if (parsed?.data?.petitions?.length) return parsed.data;
     } catch {
       /* ignore */
@@ -720,11 +730,15 @@ export async function fetchPetitionsApi() {
     return null;
   };
 
-  const local = readLocal();
-  if (local) return local;
+  if (!opts?.force) {
+    const local = readLocal();
+    if (local) return local;
+  } else {
+    petitionsInflight = null;
+  }
 
   if (!petitionsInflight) {
-    petitionsInflight = apiFetch<Payload>('/api/voter/petitions')
+    petitionsInflight = apiFetch<PetitionsPayload>('/api/voter/petitions')
       .then((data) => {
         const payload = {
           petitions: data.petitions ?? [],
@@ -757,7 +771,7 @@ export async function createPetitionApi(body: {
   short_label?: string;
   is_default?: boolean;
 }) {
-  return apiFetch<{
+  const res = await apiFetch<{
     petition: {
       id: number;
       slug: string;
@@ -773,6 +787,8 @@ export async function createPetitionApi(body: {
     method: 'POST',
     body: JSON.stringify(body),
   });
+  invalidatePetitionsCache();
+  return res;
 }
 
 export async function createPetitionGroupApi(body: {
@@ -780,7 +796,7 @@ export async function createPetitionGroupApi(body: {
   short_label?: string;
   petition_ids: number[];
 }) {
-  return apiFetch<{
+  const res = await apiFetch<{
     group: {
       id: number;
       slug: string;
@@ -792,6 +808,8 @@ export async function createPetitionGroupApi(body: {
     method: 'POST',
     body: JSON.stringify({ kind: 'group', ...body }),
   });
+  invalidatePetitionsCache();
+  return res;
 }
 
 export async function updatePetitionApi(body: {
@@ -803,7 +821,7 @@ export async function updatePetitionApi(body: {
   is_active?: boolean;
   group_id?: number | null;
 }) {
-  return apiFetch<{
+  const res = await apiFetch<{
     petition: {
       id: number;
       slug: string;
@@ -819,6 +837,8 @@ export async function updatePetitionApi(body: {
     method: 'PATCH',
     body: JSON.stringify(body),
   });
+  invalidatePetitionsCache();
+  return res;
 }
 
 export async function updatePetitionGroupApi(body: {
@@ -827,7 +847,7 @@ export async function updatePetitionGroupApi(body: {
   short_label?: string;
   sort_order?: number;
 }) {
-  return apiFetch<{
+  const res = await apiFetch<{
     group: {
       id: number;
       slug: string;
@@ -839,20 +859,26 @@ export async function updatePetitionGroupApi(body: {
     method: 'PATCH',
     body: JSON.stringify({ kind: 'group', ...body }),
   });
+  invalidatePetitionsCache();
+  return res;
 }
 
 export async function deletePetitionApi(id: number) {
-  return apiFetch<{ ok: boolean }>('/api/voter/petitions', {
+  const res = await apiFetch<{ ok: boolean }>('/api/voter/petitions', {
     method: 'DELETE',
     body: JSON.stringify({ id }),
   });
+  invalidatePetitionsCache();
+  return res;
 }
 
 export async function deletePetitionGroupApi(id: number) {
-  return apiFetch<{ ok: boolean }>('/api/voter/petitions', {
+  const res = await apiFetch<{ ok: boolean }>('/api/voter/petitions', {
     method: 'DELETE',
     body: JSON.stringify({ kind: 'group', id }),
   });
+  invalidatePetitionsCache();
+  return res;
 }
 
 export async function fetchTrackingPolls() {
@@ -947,6 +973,197 @@ export async function rollbackTrackingPollImport(importId: string) {
     method: 'DELETE',
     body: JSON.stringify({ import_id: importId }),
   });
+}
+
+const ABSENTEE_CACHE_KEY = 'voter_absentee_v6';
+const ABSENTEE_STALE_KEYS = [
+  'voter_absentee_v1',
+  'voter_absentee_v2',
+  'voter_absentee_v3',
+  'voter_absentee_v4',
+  'voter_absentee_v5',
+];
+let absenteeInflight: Promise<AbsenteeDashboard> | null = null;
+
+function dropStaleAbsenteeCaches() {
+  for (const key of ABSENTEE_STALE_KEYS) {
+    try {
+      sessionStorage.removeItem(key);
+      localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export function fetchAbsenteeTargetCount(filters: VoterFilters) {
+  return apiFetch<{ count: number }>('/api/voter/absentee', {
+    method: 'POST',
+    body: JSON.stringify({ kind: 'count', filters: toFilterPayload(filters) }),
+  });
+}
+
+export function invalidateAbsenteeCache() {
+  absenteeInflight = null;
+  removeStorageKey(ABSENTEE_CACHE_KEY);
+  dropStaleAbsenteeCaches();
+}
+
+export async function fetchAbsenteeDashboard(opts?: {
+  force?: boolean;
+  slugs?: string[];
+}) {
+  const slugs = (opts?.slugs ?? []).filter(Boolean);
+  const useCache = slugs.length === 0;
+  const readLocal = (): AbsenteeDashboard | null => {
+    if (!useCache) return null;
+    try {
+      const raw =
+        sessionStorage.getItem(ABSENTEE_CACHE_KEY) ??
+        localStorage.getItem(ABSENTEE_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as { data?: AbsenteeDashboard } | AbsenteeDashboard;
+      const data =
+        'data' in parsed && parsed.data ? parsed.data : (parsed as AbsenteeDashboard);
+      if (
+        Array.isArray(data.elections) &&
+        data.headline &&
+        Array.isArray(data.by_election) &&
+        (data.by_election.length > 0 || data.elections.length === 0) &&
+        (Number(data.headline.rows) > 0 ||
+          Number(data.headline.unique_voters) > 0 ||
+          data.elections.length === 0)
+      ) {
+        return normalizeAbsenteeDashboard(data);
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  };
+
+  dropStaleAbsenteeCaches();
+
+  if (!opts?.force) {
+    const local = readLocal();
+    if (local) return local;
+  } else if (useCache) {
+    absenteeInflight = null;
+  }
+
+  const qs = slugs.length
+    ? `?slugs=${encodeURIComponent(slugs.join(','))}`
+    : '';
+  const request = () =>
+    apiFetch<AbsenteeDashboard>(`/api/voter/absentee${qs}`).then((data) => {
+      const payload = normalizeAbsenteeDashboard(data);
+      const usable =
+        payload.by_election.length > 0 ||
+        payload.headline.rows > 0 ||
+        payload.headline.unique_voters > 0 ||
+        payload.elections.length === 0;
+      if (useCache && usable) {
+        try {
+          const raw = JSON.stringify({ at: Date.now(), data: payload });
+          sessionStorage.setItem(ABSENTEE_CACHE_KEY, raw);
+          localStorage.setItem(ABSENTEE_CACHE_KEY, raw);
+        } catch {
+          /* ignore */
+        }
+      }
+      return payload;
+    });
+
+  if (!useCache) return request();
+
+  if (!absenteeInflight) {
+    absenteeInflight = request()
+      .catch((err) => {
+        const cached = readLocal();
+        if (cached) return cached;
+        throw err;
+      })
+      .finally(() => {
+        absenteeInflight = null;
+      });
+  }
+  return absenteeInflight;
+}
+
+export async function createAbsenteeElectionApi(body: {
+  label: string;
+  slug?: string;
+  short_label?: string;
+  is_default?: boolean;
+}) {
+  const res = await apiFetch<{ election: AbsenteeElection }>('/api/voter/absentee', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  invalidateAbsenteeCache();
+  return res;
+}
+
+export async function updateAbsenteeElectionApi(body: {
+  id: number;
+  label?: string;
+  short_label?: string;
+  sort_order?: number;
+  is_default?: boolean;
+  is_active?: boolean;
+  group_id?: number | null;
+}) {
+  const res = await apiFetch<{ election: AbsenteeElection }>('/api/voter/absentee', {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+  invalidateAbsenteeCache();
+  return res;
+}
+
+export async function deleteAbsenteeElectionApi(id: number) {
+  const res = await apiFetch<{ ok: boolean }>('/api/voter/absentee', {
+    method: 'DELETE',
+    body: JSON.stringify({ id }),
+  });
+  invalidateAbsenteeCache();
+  return res;
+}
+
+export async function createAbsenteeGroupApi(body: {
+  label: string;
+  short_label?: string;
+  election_ids: number[];
+}) {
+  const res = await apiFetch<{ group: AbsenteeGroup }>('/api/voter/absentee', {
+    method: 'POST',
+    body: JSON.stringify({ kind: 'group', ...body }),
+  });
+  invalidateAbsenteeCache();
+  return res;
+}
+
+export async function updateAbsenteeGroupApi(body: {
+  id: number;
+  label?: string;
+  short_label?: string;
+  sort_order?: number;
+}) {
+  const res = await apiFetch<{ group: AbsenteeGroup }>('/api/voter/absentee', {
+    method: 'PATCH',
+    body: JSON.stringify({ kind: 'group', ...body }),
+  });
+  invalidateAbsenteeCache();
+  return res;
+}
+
+export async function deleteAbsenteeGroupApi(id: number) {
+  const res = await apiFetch<{ ok: boolean }>('/api/voter/absentee', {
+    method: 'DELETE',
+    body: JSON.stringify({ kind: 'group', id }),
+  });
+  invalidateAbsenteeCache();
+  return res;
 }
 
 type FilterOptionsCache = {
