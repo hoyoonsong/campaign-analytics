@@ -21,6 +21,7 @@ import {
   VoterFiltersPanel,
 } from "../components/VoterFiltersPanel";
 import { VoterMap } from "../components/VoterMap";
+import type { PollMapLocation } from "../lib/pollingLocations";
 import { VoterProfileModal } from "../components/VoterProfileModal";
 import { logActivity } from "../lib/activityLog";
 import {
@@ -28,6 +29,7 @@ import {
   fetchAnalytics,
   fetchFilterOptions,
   fetchMapCampaignGeo,
+  fetchPollingLocations,
   syncCampaignIndexes,
 } from "../lib/api";
 import { dashboardHeadline, useAbsenteeElections } from "../lib/absentee";
@@ -96,6 +98,7 @@ export default function Analytics() {
   const [options, setOptions] = useState(EMPTY_FILTER_OPTIONS);
   const [loading, setLoading] = useState(true);
   const [pinsLoading, setPinsLoading] = useState(false);
+  const [pollingLocations, setPollingLocations] = useState<PollMapLocation[]>([]);
   const [focusCounty, setFocusCounty] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
@@ -215,6 +218,20 @@ export default function Analytics() {
       .then((o) => setOptions(mergeOptions(o)))
       .catch(() => setOptions(EMPTY_FILTER_OPTIONS));
   }, [filtersOpen]);
+
+  useEffect(() => {
+    let active = true;
+    void fetchPollingLocations()
+      .then((res) => {
+        if (active) setPollingLocations(res.locations);
+      })
+      .catch(() => {
+        if (active) setPollingLocations([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [reloadToken]);
 
   useEffect(() => {
     setMapError(null);
@@ -849,9 +866,9 @@ export default function Analytics() {
               <div>
                 <h3 className="text-sm font-semibold text-slate-800">Map</h3>
                 <p className="text-xs text-slate-500">
-                  Click a county to plot every geocoded voter. Use the legend to
-                  hide voters, yard signs, or volunteers. Chart clicks open
-                  Search with Filters — map stays here.
+                  Click a county to plot voters, election-day polls, and early voting.
+                  Blue pins are election-day polls. Amber diamonds are early voting.
+                  Chart clicks open Search with Filters — the map stays here.
                 </p>
               </div>
               {mapError && focusCounty ? (
@@ -868,6 +885,7 @@ export default function Analytics() {
                 truncated={truncated}
                 totalVoters={summary.total}
                 pinsLoading={pinsLoading}
+                pollingLocations={pollingLocations}
               />
             </section>
           </>

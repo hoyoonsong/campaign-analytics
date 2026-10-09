@@ -69,6 +69,7 @@ const ROUTES: [string, string][] = [
   ['/api/voter/yard-sign-suggestions', '_handlers/voter/yard-sign-suggestions.ts'],
   ['/api/voter/activity', '_handlers/voter/activity.ts'],
   ['/api/voter/sync-campaign', '_handlers/voter/sync-campaign.ts'],
+  ['/api/voter/polling-locations', '_handlers/voter/polling-locations.ts'],
 ];
 
 /** Express app with /api routes — mount in Vite or listen standalone. */

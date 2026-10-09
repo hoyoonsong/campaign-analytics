@@ -25,6 +25,7 @@ const ROUTES: Record<string, () => Promise<{ default: Handler }>> = {
   'contact-suggestions': () => import('./_handlers/voter/contact-suggestions.js'),
   usage: () => import('./_handlers/voter/usage.js'),
   'yard-sign-suggestions': () => import('./_handlers/voter/yard-sign-suggestions.js'),
+  'polling-locations': () => import('./_handlers/voter/polling-locations.js'),
 };
 
 function routeKey(req: VercelRequest): string | null {

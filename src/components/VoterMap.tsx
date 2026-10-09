@@ -11,8 +11,11 @@ import L from 'leaflet';
 import type { GeoJsonObject, Feature, FeatureCollection } from 'geojson';
 import 'leaflet/dist/leaflet.css';
 import { COUNTY_CENTROIDS, IDAHO_COUNTIES } from '../lib/idahoCounties';
+import { fetchPollLinks } from '../lib/api';
+import { countyKey, type PollMapLocation } from '../lib/pollingLocations';
 import { collapsePresencePins, type PresencePin, type RawPresencePin } from '../lib/presencePins';
 import type { CountyCoordPayload } from '../lib/mapCoordsCache';
+import { PollLinkLayer } from './PollLinkLayer';
 import { VoterClusterLayer } from './VoterClusterLayer';
 
 export type CampaignMapPin = RawPresencePin;
@@ -21,22 +24,39 @@ type MapLayers = {
   voters: boolean;
   volunteers: boolean;
   yardSigns: boolean;
+  electionDay: boolean;
+  earlyVoting: boolean;
+  electionLines: boolean;
+  earlyLines: boolean;
 };
 
 const LAYER_KEY = 'analytics-map-layers-v1';
 
 function loadLayers(): MapLayers {
+  const fallback: MapLayers = {
+    voters: true,
+    volunteers: true,
+    yardSigns: true,
+    electionDay: true,
+    earlyVoting: true,
+    electionLines: true,
+    earlyLines: false,
+  };
   try {
     const raw = localStorage.getItem(LAYER_KEY);
-    if (!raw) return { voters: true, volunteers: true, yardSigns: true };
+    if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<MapLayers>;
     return {
       voters: parsed.voters !== false,
       volunteers: parsed.volunteers !== false,
       yardSigns: parsed.yardSigns !== false,
+      electionDay: parsed.electionDay !== false,
+      earlyVoting: parsed.earlyVoting !== false,
+      electionLines: parsed.electionLines !== false,
+      earlyLines: parsed.earlyLines === true,
     };
   } catch {
-    return { voters: true, volunteers: true, yardSigns: true };
+    return fallback;
   }
 }
 
@@ -67,6 +87,24 @@ const volIcon = L.divIcon({
   iconSize: [22, 22],
   iconAnchor: [11, 11],
   popupAnchor: [0, -12],
+});
+
+/** Election-day polling place: blue map pin. */
+const electionIcon = L.divIcon({
+  className: '',
+  html: `<svg width="28" height="36" viewBox="0 0 28 36" xmlns="http://www.w3.org/2000/svg" style="filter:drop-shadow(0 2px 3px rgba(0,0,0,.45))"><path d="M14 34.5C14 34.5 2.5 20.5 2.5 13.2a11.5 11.5 0 1 1 23 0C25.5 20.5 14 34.5 14 34.5z" fill="#1d4ed8" stroke="#fff" stroke-width="2"/><text x="14" y="16.5" text-anchor="middle" font-size="7" font-weight="800" fill="#fff" font-family="ui-sans-serif,system-ui,sans-serif">POLL</text></svg>`,
+  iconSize: [28, 36],
+  iconAnchor: [14, 34],
+  popupAnchor: [0, -32],
+});
+
+/** Early voting: amber diamond, so it never reads as an election-day pin. */
+const earlyIcon = L.divIcon({
+  className: '',
+  html: `<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="filter:drop-shadow(0 2px 3px rgba(0,0,0,.45))"><path d="M16 2.5 29.5 16 16 29.5 2.5 16Z" fill="#d97706" stroke="#fff" stroke-width="2"/><text x="16" y="18.5" text-anchor="middle" font-size="6.5" font-weight="800" fill="#fff" font-family="ui-sans-serif,system-ui,sans-serif">EARLY</text></svg>`,
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+  popupAnchor: [0, -16],
 });
 
 /** Volunteer + yard sign — one pin so roles never stack. */
@@ -135,6 +173,7 @@ export function VoterMap({
   truncated,
   totalVoters,
   pinsLoading = false,
+  pollingLocations = [],
 }: {
   countyCounts: Record<string, number>;
   focusCounty: string | null;
@@ -146,6 +185,7 @@ export function VoterMap({
   truncated: boolean;
   totalVoters: number;
   pinsLoading?: boolean;
+  pollingLocations?: PollMapLocation[];
 }) {
   const [layers, setLayers] = useState<MapLayers>(loadLayers);
   const countiesWithVoters = useMemo(
@@ -191,6 +231,75 @@ export function VoterMap({
     });
   };
 
+  const focusKey = countyKey(focusCounty);
+  const visiblePolls = useMemo(() => {
+    if (!focusKey) return [];
+    return pollingLocations.filter((site) => {
+      if (site.kind === 'election_day' && !layers.electionDay) return false;
+      if (site.kind === 'early_voting' && !layers.earlyVoting) return false;
+      if (countyKey(site.county) !== focusKey) return false;
+      return Number.isFinite(site.lat) && Number.isFinite(site.lng);
+    });
+  }, [focusKey, layers.electionDay, layers.earlyVoting, pollingLocations]);
+  const electionCount = visiblePolls.filter((site) => site.kind === 'election_day').length;
+  const earlyCount = visiblePolls.filter((site) => site.kind === 'early_voting').length;
+
+  const [electionLinks, setElectionLinks] = useState<number[][]>([]);
+  const [earlyLinks, setEarlyLinks] = useState<number[][]>([]);
+  const [linkNote, setLinkNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!focusCounty || pollingLocations.length === 0) {
+      setElectionLinks([]);
+      setEarlyLinks([]);
+      setLinkNote(null);
+      return;
+    }
+    let active = true;
+    setElectionLinks([]);
+    setEarlyLinks([]);
+    setLinkNote(null);
+    const notes: string[] = [];
+    const loadKind = async (
+      kind: 'election_day' | 'early_voting',
+      enabled: boolean,
+    ) => {
+      if (!enabled) return [] as number[][];
+      try {
+        const res = await fetchPollLinks(focusCounty, kind);
+        if (res.truncated) {
+          notes.push(
+            kind === 'election_day'
+              ? 'This county has more people than the map can connect to election-day sites. Open a person to see their site.'
+              : 'This county has more people than the map can connect to early-voting sites. Open a person to see their site.',
+          );
+          return [];
+        }
+        return res.links;
+      } catch {
+        return [];
+      }
+    };
+    void (async () => {
+      const [election, early] = await Promise.all([
+        loadKind('election_day', layers.electionLines),
+        loadKind('early_voting', layers.earlyLines),
+      ]);
+      if (!active) return;
+      setElectionLinks(election);
+      setEarlyLinks(early);
+      setLinkNote(notes[0] ?? null);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [
+    focusCounty,
+    layers.earlyLines,
+    layers.electionLines,
+    pollingLocations.length,
+  ]);
+
   const headerDetail = focusCounty
     ? `${focusCounty} County` +
       (pinsLoading && layers.voters
@@ -198,6 +307,9 @@ export function VoterMap({
         : layers.voters
           ? ` · ${headerVoters.toLocaleString()} voter${headerVoters === 1 ? '' : 's'}`
           : '') +
+      (electionCount || earlyCount
+        ? ` · ${electionCount.toLocaleString()} election-day polls · ${earlyCount.toLocaleString()} early-voting sites`
+        : '') +
       (presencePins.length
         ? ` · ${yardOnlyCount} yard signs · ${volOnlyCount} volunteers` +
           (bothCount ? ` · ${bothCount} both` : '')
@@ -205,7 +317,7 @@ export function VoterMap({
       (truncated ? ' (spread sample — snapshot unavailable)' : '')
     : `${countiesWithVoters} of 44 counties with voters` +
       (totalVoters ? ` · ${totalVoters.toLocaleString()} matching` : '') +
-      ' · click a county to zoom & show pins';
+      ' · click a county to zoom and show pins';
 
   return (
     <div className="card overflow-hidden">
@@ -259,6 +371,26 @@ export function VoterMap({
               onOpenProfile={onOpenProfile}
             />
           ) : null}
+
+          {focusCounty && layers.electionLines && electionLinks.length > 0 ? (
+            <PollLinkLayer links={electionLinks} color="rgba(29, 78, 216, 0.55)" />
+          ) : null}
+          {focusCounty && layers.earlyLines && earlyLinks.length > 0 ? (
+            <PollLinkLayer links={earlyLinks} color="rgba(217, 119, 6, 0.7)" />
+          ) : null}
+
+          {visiblePolls.map((site) => (
+            <Marker
+              key={`poll-${site.id}`}
+              position={[site.lat, site.lng]}
+              icon={site.kind === 'early_voting' ? earlyIcon : electionIcon}
+              zIndexOffset={site.kind === 'early_voting' ? 1200 : 1000}
+            >
+              <Popup>
+                <PollPopup site={site} />
+              </Popup>
+            </Marker>
+          ))}
 
           {focusCounty &&
             presencePins.map((g, i) => (
@@ -328,6 +460,43 @@ export function VoterMap({
             <span className="text-[11px] text-slate-400">Click to show/hide</span>
           </>
         )}
+        {focusCounty && pollingLocations.length > 0 ? (
+          <>
+            <LayerToggle
+              on={layers.electionDay}
+              onClick={() => toggleLayer('electionDay')}
+            >
+              <span className="inline-block h-3.5 w-3 rounded-full bg-blue-700 ring-2 ring-white" />
+              Election-day polls
+            </LayerToggle>
+            <LayerToggle
+              on={layers.earlyVoting}
+              onClick={() => toggleLayer('earlyVoting')}
+            >
+              <span className="inline-block h-3 w-3 rotate-45 bg-amber-600 ring-2 ring-white" />
+              Early voting
+            </LayerToggle>
+            {focusCounty ? (
+              <>
+                <LayerToggle
+                  on={layers.electionLines}
+                  onClick={() => toggleLayer('electionLines')}
+                >
+                  <span className="inline-block h-0.5 w-4 bg-blue-700" />
+                  Lines to election-day poll
+                </LayerToggle>
+                <LayerToggle
+                  on={layers.earlyLines}
+                  onClick={() => toggleLayer('earlyLines')}
+                >
+                  <span className="inline-block h-0.5 w-4 bg-amber-600" />
+                  Lines to early voting
+                </LayerToggle>
+              </>
+            ) : null}
+          </>
+        ) : null}
+        {linkNote ? <span className="text-[11px] text-slate-500">{linkNote}</span> : null}
       </div>
     </div>
   );
@@ -353,6 +522,34 @@ function LayerToggle({
     >
       {children}
     </button>
+  );
+}
+
+function PollPopup({ site }: { site: PollMapLocation }) {
+  const address = [site.address_line_1, site.city, site.zip].filter(Boolean).join(', ');
+  const precincts =
+    site.precinct_names && !/^ev$/i.test(site.precinct_names.trim())
+      ? site.precinct_names.slice(0, 160)
+      : null;
+  const people = site.assigned_count.toLocaleString();
+  return (
+    <div className="min-w-[180px] space-y-1 text-sm">
+      <p
+        className={`text-[10px] font-semibold uppercase tracking-wide ${
+          site.kind === 'early_voting' ? 'text-amber-700' : 'text-blue-700'
+        }`}
+      >
+        {site.kind === 'early_voting' ? 'Early voting' : 'Election-day poll'}
+      </p>
+      <p className="font-semibold text-slate-900">{site.name}</p>
+      {address ? <p className="text-slate-600">{address}</p> : null}
+      {site.county ? <p className="text-slate-600">{site.county} County</p> : null}
+      {precincts ? <p className="text-xs text-slate-500">{precincts}</p> : null}
+      <p className="text-xs text-slate-500">
+        Nearest {site.kind === 'early_voting' ? 'early-voting site' : 'election-day poll'} for{' '}
+        {people} {site.assigned_count === 1 ? 'person' : 'people'}
+      </p>
+    </div>
   );
 }
 

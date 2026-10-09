@@ -4,6 +4,7 @@ import {
   fetchVoterProfile,
   type CampaignPersonDetail,
   type NearbyKind,
+  type VoterPollSite,
 } from '../lib/api';
 import { NearbyPinModal } from './NearbyPinModal';
 import { Spinner } from './ui';
@@ -75,6 +76,61 @@ function fmtMiles(n: number | null | undefined): string | null {
   return `${n.toFixed(1)} mi`;
 }
 
+function PollSiteCard({
+  label,
+  site,
+  empty,
+  tone,
+}: {
+  label: string;
+  site: VoterPollSite | null;
+  empty: string;
+  tone: 'election' | 'early';
+}) {
+  const accent =
+    tone === 'early'
+      ? 'border-l-amber-500 bg-amber-50/60'
+      : 'border-l-blue-700 bg-blue-50/50';
+  const labelColor = tone === 'early' ? 'text-amber-800' : 'text-blue-800';
+  if (!site) {
+    return (
+      <div className={`rounded-md border border-slate-100 border-l-4 px-3 py-2 ${accent}`}>
+        <p className={`text-sm font-medium ${labelColor}`}>{label}</p>
+        <p className="text-xs text-slate-500">{empty}</p>
+      </div>
+    );
+  }
+  const address = [site.address_line_1, site.address_line_2, site.city, site.zip]
+    .filter(Boolean)
+    .join(', ');
+  const miles = fmtMiles(site.miles);
+  const mapHref =
+    site.lat != null && site.lng != null
+      ? `https://www.google.com/maps/search/?api=1&query=${site.lat},${site.lng}`
+      : null;
+  return (
+    <div className={`rounded-md border border-slate-100 border-l-4 px-3 py-2 ${accent}`}>
+      <p className={`text-sm font-medium ${labelColor}`}>
+        {label}
+        {miles ? <span className="font-normal text-slate-500"> · {miles}</span> : null}
+      </p>
+      <p className="text-sm text-slate-800">{site.name}</p>
+      {address ? <p className="text-xs text-slate-600">{address}</p> : null}
+      {site.county ? <p className="text-xs text-slate-500">{site.county} County</p> : null}
+      {mapHref ? (
+        <a
+          className="mt-1 inline-block text-xs text-brand-700 hover:underline"
+          href={mapHref}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open in Google Maps
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
 export function VoterProfileModal({
   voterId,
   onClose,
@@ -91,6 +147,10 @@ export function VoterProfileModal({
     volunteer_miles: number | null;
   } | null>(null);
   const [nearbyKind, setNearbyKind] = useState<NearbyKind | null>(null);
+  const [polls, setPolls] = useState<{
+    election_day: VoterPollSite | null;
+    early_voting: VoterPollSite | null;
+  } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -102,6 +162,7 @@ export function VoterProfileModal({
         setVoter(r.voter as VoterProfile);
         setCampaign(r.campaign);
         setNearby(r.nearby);
+        setPolls(r.polls);
       })
       .catch((err: Error) => {
         if (active) setError(err.message);
@@ -337,6 +398,35 @@ export function VoterProfileModal({
                   <dd className="text-slate-800">{labelVal(voter.age)}</dd>
                 </dl>
               </section>
+
+              {polls && (
+                <section>
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Nearest polling places
+                  </h3>
+                  <div className="space-y-2">
+                    <PollSiteCard
+                      label="Election-day poll"
+                      site={polls.election_day}
+                      empty="No election-day poll is matched yet."
+                      tone="election"
+                    />
+                    <PollSiteCard
+                      label="Early voting"
+                      site={polls.early_voting}
+                      empty="No early-voting site is matched yet."
+                      tone="early"
+                    />
+                  </div>
+                  {!polls.election_day &&
+                  !polls.early_voting &&
+                  (voter.lat == null || voter.lng == null) ? (
+                    <p className="mt-2 text-xs text-slate-400">
+                      This person has no map coordinates yet, so a nearest site has not been chosen.
+                    </p>
+                  ) : null}
+                </section>
+              )}
 
               <section>
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">

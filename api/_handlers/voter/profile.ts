@@ -10,6 +10,7 @@ import {
   loadLeanGeo,
   nearestMiles,
 } from '../../_lib/enrichSearch.js';
+import { pollsForVoter } from '../../_lib/pollingLocations.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ctx = await requireCampaignUser(req, res);
@@ -38,6 +39,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     campaign_person_id?: string | null;
     lat?: number | null;
     lng?: number | null;
+    county?: string | null;
     supporter_tag?: string | null;
   };
 
@@ -179,5 +181,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     /* absentee tables may not be applied yet */
   }
 
-  return json(res, 200, { voter, campaign, nearby });
+  let polls: Awaited<ReturnType<typeof pollsForVoter>> = null;
+  try {
+    polls = await pollsForVoter(ctx.voter, {
+      id,
+      lat: voter.lat == null ? null : Number(voter.lat),
+      lng: voter.lng == null ? null : Number(voter.lng),
+      county: typeof voter.county === 'string' ? voter.county : null,
+    });
+  } catch {
+    polls = null;
+  }
+
+  return json(res, 200, { voter, campaign, nearby, polls });
 }

@@ -92,6 +92,7 @@ const allFiles = [
   'supabase/migrations/0065_absentee_target_count.sql',
   'supabase/migrations/0066_absentee_mask_party.sql',
   'supabase/migrations/0067_absentee_export_fast.sql',
+  'supabase/migrations/0068_polling_locations.sql',
 ];
 
 const applyFrom = process.env.APPLY_FROM || process.argv[2] || '0015';

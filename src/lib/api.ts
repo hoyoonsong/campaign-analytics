@@ -18,6 +18,7 @@ import type {
 } from './trackingPoll/types';
 import type { VoterHit } from './trackingPoll/match';
 import type { AbsenteeDashboard, AbsenteeElection, AbsenteeGroup } from './absentee';
+import type { PollMapLocation, PollingImportRow } from './pollingLocations';
 import { normalizeAbsenteeDashboard } from './absentee';
 
 async function authHeaders(): Promise<HeadersInit> {
@@ -321,9 +322,91 @@ export function fetchVoterProfile(id: number) {
       yard_sign_miles: number | null;
       volunteer_miles: number | null;
     } | null;
+    polls: {
+      election_day: VoterPollSite | null;
+      early_voting: VoterPollSite | null;
+    } | null;
   }>('/api/voter/profile', {
     method: 'POST',
     body: JSON.stringify({ id }),
+  });
+}
+
+export type VoterPollSite = {
+  id: number;
+  kind: 'election_day' | 'early_voting';
+  name: string;
+  address_line_1: string | null;
+  address_line_2: string | null;
+  city: string | null;
+  zip: string | null;
+  county: string | null;
+  miles: number | null;
+  lat: number | null;
+  lng: number | null;
+  precinct_names: string | null;
+};
+
+export function fetchPollingLocations() {
+  return apiFetch<{
+    locations: PollMapLocation[];
+    summary: {
+      election_day: number;
+      early_voting: number;
+      plotted: number;
+      ungeocoded: number;
+    };
+  }>('/api/voter/polling-locations', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'list' }),
+  });
+}
+
+export function fetchPollLinks(county: string, kind: 'election_day' | 'early_voting') {
+  return apiFetch<{
+    total: number;
+    truncated: boolean;
+    links: number[][];
+  }>('/api/voter/polling-locations', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'links', county, kind }),
+  });
+}
+
+export function importPollingLocations(input: {
+  kind: 'election_day' | 'early_voting';
+  locations: PollingImportRow[];
+}) {
+  return apiFetch<{
+    kind: 'election_day' | 'early_voting';
+    saved: number;
+    geocoded: number;
+    ungeocoded: number;
+  }>('/api/voter/polling-locations', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'import', ...input }),
+  });
+}
+
+export function geocodeMissingPollingLocations() {
+  return apiFetch<{ geocoded: number; remaining: number }>(
+    '/api/voter/polling-locations',
+    {
+      method: 'POST',
+      body: JSON.stringify({ action: 'geocode_missing' }),
+    },
+  );
+}
+
+export function assignNearestPollingLocations(afterId: number) {
+  return apiFetch<{
+    assigned: number;
+    after_id: number;
+    done: boolean;
+    total: number | null;
+  }>('/api/voter/polling-locations', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'assign', after_id: afterId }),
   });
 }
 

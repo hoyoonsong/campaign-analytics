@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, PageHeader } from '../components/ui';
 import { ImportMappingModal } from '../components/ImportMappingModal';
+import { PollingLocationsCard } from '../components/PollingLocationsCard';
 import { normalizeImportRow } from '../lib/normalizeImportRow';
 import {
   createAbsenteeElectionApi,
@@ -210,6 +211,12 @@ export default function ImportPage() {
       {error && (
         <div className="mb-4">
           <Alert variant="error">{error}</Alert>
+        </div>
+      )}
+
+      {phase === 'idle' && (
+        <div className="mb-4">
+          <PollingLocationsCard />
         </div>
       )}
 
