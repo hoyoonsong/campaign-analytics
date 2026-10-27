@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import counties from '../../src/data/idahoCounties.json' with { type: 'json' };
+import { campaignAdminClient } from './campaign.js';
 import { milesBetween } from './geo.js';
 
 export type PollingKind = 'election_day' | 'early_voting';
@@ -83,6 +84,12 @@ function countyKey(raw: string | null | undefined): string {
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+function displayCounty(raw: string | null | undefined): string {
+  const key = countyKey(raw);
+  if (!key) return '';
+  return key.replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
 }
 
 function blankToNull(value: string | null | undefined): string | null {
@@ -715,4 +722,145 @@ export async function pollsForVoter(
   }
 
   return { election_day: election, early_voting: early };
+}
+
+type YardSignPoint = {
+  name: string | null;
+  address: string | null;
+  lat: number;
+  lng: number;
+  is_big: boolean;
+};
+
+async function loadYardSigns(): Promise<YardSignPoint[]> {
+  const campaign = campaignAdminClient();
+  const page = 1000;
+  const out: YardSignPoint[] = [];
+  for (let from = 0; ; from += page) {
+    const { data, error } = await campaign
+      .from('yard_signs')
+      .select('name, address, lat, lng, is_big')
+      .not('lat', 'is', null)
+      .not('lng', 'is', null)
+      .range(from, from + page - 1);
+    if (error) throw new Error(error.message);
+    const rows = data ?? [];
+    for (const row of rows) {
+      const lat = Number(row.lat);
+      const lng = Number(row.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      out.push({
+        name: (row.name as string | null) ?? null,
+        address: (row.address as string | null) ?? null,
+        lat,
+        lng,
+        is_big: row.is_big === true,
+      });
+    }
+    if (rows.length < page) break;
+  }
+  return out;
+}
+
+export async function pollingCountyRanks(voter: SupabaseClient) {
+  const { data, error } = await voter.rpc('county_voter_counts');
+  if (error) throw pollingDbError(error.message);
+  const known = new Set(
+    COUNTY_FEATURES.map((feature) => countyKey(feature.properties?.name)).filter(Boolean),
+  );
+  const buckets = new Map<string, { name: string; voters: number }>();
+  for (const row of (data ?? []) as Array<{ county?: string | null; voters?: number | string }>) {
+    const key = countyKey(row.county);
+    if (!key || !known.has(key)) continue;
+    const name = displayCounty(row.county);
+    const voters = Number(row.voters) || 0;
+    const prev = buckets.get(key);
+    if (prev) prev.voters += voters;
+    else buckets.set(key, { name, voters });
+  }
+  const pollCounties = await selectAll<{ county: string | null }>(voter, 'polling_locations', 'county');
+  for (const row of pollCounties) {
+    const key = countyKey(row.county);
+    if (!key || !known.has(key) || buckets.has(key)) continue;
+    buckets.set(key, { name: displayCounty(row.county), voters: 0 });
+  }
+  const counties = [...buckets.values()].sort((a, b) => b.voters - a.voters || a.name.localeCompare(b.name));
+  return { counties };
+}
+
+export async function pollingYardSignGaps(voter: SupabaseClient, county: string) {
+  const key = countyKey(county);
+  if (!key) throw new Error('county is required');
+  const [locations, signs] = await Promise.all([
+    selectAll<{
+      id: number;
+      kind: PollingKind;
+      name: string;
+      address_line_1: string | null;
+      city: string | null;
+      zip: string | null;
+      county: string | null;
+      lat: number | null;
+      lng: number | null;
+      status: string | null;
+    }>(
+      voter,
+      'polling_locations',
+      'id, kind, name, address_line_1, city, zip, county, lat, lng, status',
+    ),
+    loadYardSigns(),
+  ]);
+
+  const sites = locations
+    .filter(
+      (row) =>
+        isActive(row.status) &&
+        countyKey(row.county) === key &&
+        row.lat != null &&
+        row.lng != null,
+    )
+    .map((row) => {
+      let best: YardSignPoint | null = null;
+      let bestMiles = Infinity;
+      for (const sign of signs) {
+        const miles = milesBetween(row.lat as number, row.lng as number, sign.lat, sign.lng);
+        if (miles < bestMiles) {
+          bestMiles = miles;
+          best = sign;
+        }
+      }
+      return {
+        id: row.id,
+        kind: row.kind,
+        name: row.name,
+        address_line_1: row.address_line_1,
+        city: row.city,
+        zip: row.zip,
+        lat: row.lat as number,
+        lng: row.lng as number,
+        miles: best ? bestMiles : null,
+        nearest_is_big: best ? best.is_big : null,
+        nearest_name: best?.name ?? null,
+        nearest_address: best?.address ?? null,
+        nearest_lat: best ? best.lat : null,
+        nearest_lng: best ? best.lng : null,
+      };
+    })
+    .sort((a, b) => {
+      if (a.miles == null && b.miles == null) return a.name.localeCompare(b.name);
+      if (a.miles == null) return -1;
+      if (b.miles == null) return 1;
+      return b.miles - a.miles || a.name.localeCompare(b.name);
+    })
+    .map((site) => ({
+      ...site,
+      miles: site.miles == null ? null : Math.round(site.miles * 100) / 100,
+    }));
+
+  return {
+    county: displayCounty(county),
+    yard_sign_count: signs.length,
+    big_yard_sign_count: signs.filter((sign) => sign.is_big).length,
+    sites,
+  };
 }

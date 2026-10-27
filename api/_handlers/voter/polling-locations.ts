@@ -5,8 +5,10 @@ import {
   geocodeMissingPollingLocations,
   importPollingLocations,
   listPollingLocations,
+  pollingCountyRanks,
   pollingDbError,
   pollingLinks,
+  pollingYardSignGaps,
   type PollingImportRow,
   type PollingKind,
 } from '../../_lib/pollingLocations.js';
@@ -31,6 +33,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (body.action === 'list') {
       return json(res, 200, await listPollingLocations(ctx.voter));
+    }
+    if (body.action === 'counties') {
+      return json(res, 200, await pollingCountyRanks(ctx.voter));
+    }
+    if (body.action === 'yard_gaps') {
+      const county = (body.county ?? '').trim();
+      if (!county) return json(res, 400, { error: 'county is required' });
+      return json(res, 200, await pollingYardSignGaps(ctx.voter, county));
     }
     if (body.action === 'links') {
       const kind = kindOf(body.kind);

@@ -81,6 +81,14 @@ const yardIcon = L.divIcon({
   popupAnchor: [0, -12],
 });
 
+const bigYardIcon = L.divIcon({
+  className: '',
+  html: `<span style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:6px;background:#9a3412;border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.5);font-size:9px;font-weight:800;color:#fff;line-height:1;letter-spacing:-0.02em">BIG</span>`,
+  iconSize: [30, 30],
+  iconAnchor: [15, 15],
+  popupAnchor: [0, -16],
+});
+
 const volIcon = L.divIcon({
   className: '',
   html: `<span style="display:flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:9999px;background:#0d9488;border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.45);font-size:10px;font-weight:800;color:#fff;line-height:1">V</span>`,
@@ -116,15 +124,23 @@ const bothIcon = L.divIcon({
   popupAnchor: [0, -14],
 });
 
-function presenceIcon(kind: PresencePin['kind']) {
-  if (kind === 'both') return bothIcon;
-  if (kind === 'yard_sign') return yardIcon;
+const bothBigIcon = L.divIcon({
+  className: '',
+  html: `<span style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#0d9488 50%,#9a3412 50%);border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.5);font-size:7px;font-weight:800;color:#fff;line-height:1">V+BIG</span>`,
+  iconSize: [30, 30],
+  iconAnchor: [15, 15],
+  popupAnchor: [0, -16],
+});
+
+function presenceIcon(pin: PresencePin) {
+  if (pin.kind === 'both') return pin.is_big ? bothBigIcon : bothIcon;
+  if (pin.kind === 'yard_sign') return pin.is_big ? bigYardIcon : yardIcon;
   return volIcon;
 }
 
-function presenceLabel(kind: PresencePin['kind']) {
-  if (kind === 'both') return 'Volunteer + Yard sign';
-  if (kind === 'yard_sign') return 'Yard sign';
+function presenceLabel(pin: PresencePin) {
+  if (pin.kind === 'both') return pin.is_big ? 'Volunteer + big yard sign' : 'Volunteer + Yard sign';
+  if (pin.kind === 'yard_sign') return pin.is_big ? 'Big yard sign' : 'Yard sign';
   return 'Volunteer';
 }
 
@@ -222,6 +238,9 @@ export function VoterMap({
   const yardOnlyCount = presencePins.filter((p) => p.kind === 'yard_sign').length;
   const volOnlyCount = presencePins.filter((p) => p.kind === 'volunteer').length;
   const bothCount = presencePins.filter((p) => p.kind === 'both').length;
+  const bigYardCount = presencePins.filter(
+    (p) => p.is_big && (p.kind === 'yard_sign' || p.kind === 'both'),
+  ).length;
 
   const toggleLayer = (key: keyof MapLayers) => {
     setLayers((prev) => {
@@ -311,7 +330,9 @@ export function VoterMap({
         ? ` · ${electionCount.toLocaleString()} election-day polls · ${earlyCount.toLocaleString()} early-voting sites`
         : '') +
       (presencePins.length
-        ? ` · ${yardOnlyCount} yard signs · ${volOnlyCount} volunteers` +
+        ? ` · ${yardOnlyCount} yard signs` +
+          (bigYardCount ? ` (${bigYardCount} big)` : '') +
+          ` · ${volOnlyCount} volunteers` +
           (bothCount ? ` · ${bothCount} both` : '')
         : '') +
       (truncated ? ' (spread sample — snapshot unavailable)' : '')
@@ -397,7 +418,7 @@ export function VoterMap({
               <Marker
                 key={`p-${g.kind}-${g.source_id ?? i}-${g.lat}-${g.lng}`}
                 position={[g.lat, g.lng]}
-                icon={presenceIcon(g.kind)}
+                icon={presenceIcon(g)}
                 zIndexOffset={g.kind === 'both' ? 950 : 850}
               >
                 <Popup>
@@ -435,6 +456,14 @@ export function VoterMap({
               </span>
               Yard signs
             </LayerToggle>
+            {layers.yardSigns ? (
+              <span className="flex items-center gap-1.5 text-slate-500">
+                <span className="inline-flex h-4 w-5 items-center justify-center rounded-sm bg-orange-800 text-[8px] font-bold text-white">
+                  BIG
+                </span>
+                Big
+              </span>
+            ) : null}
             <LayerToggle
               on={layers.volunteers}
               onClick={() => toggleLayer('volunteers')}
@@ -561,7 +590,7 @@ function PresencePopup({ pin }: { pin: PresencePin }) {
   return (
     <div className="min-w-[180px] space-y-1 text-sm">
       <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-        {presenceLabel(pin.kind)}
+        {presenceLabel(pin)}
       </p>
       <p className="font-semibold text-slate-900">
         {pin.name?.trim() || 'Name not on file'}

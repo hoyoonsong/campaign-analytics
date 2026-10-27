@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { json, readBody, requireCampaignUser } from '../../_lib/auth.js';
+import { campaignAdminClient } from '../../_lib/campaign.js';
 import {
   isVoterOriginDown,
   VOTER_ORIGIN_TIMEOUT_MESSAGE,
@@ -17,6 +18,7 @@ type CampaignGeoPoint = {
   email?: string | null;
   phone?: string | null;
   address?: string | null;
+  is_big?: boolean;
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -38,7 +40,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (isVoterOriginDown()) {
       return json(res, 200, { points: [], campaign_geo: [], truncated: false });
     }
-    const campaign_geo = await fetchAllCampaignGeo(ctx.voter);
+    const campaign_geo = await attachYardSignSize(await fetchAllCampaignGeo(ctx.voter));
     rememberCampaignGeo(campaign_geo);
     return json(res, 200, { points: [], campaign_geo, truncated: false });
   }
@@ -63,7 +65,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }),
     cachedGeo?.length
       ? Promise.resolve(cachedGeo as CampaignGeoPoint[])
-      : fetchAllCampaignGeo(ctx.voter),
+      : attachYardSignSize(await fetchAllCampaignGeo(ctx.voter)),
   ]);
 
   if (error) return json(res, 500, { error: error.message });
@@ -119,4 +121,36 @@ async function fetchAllCampaignGeo(
     if (batch.length < pageSize) break;
   }
   return out;
+}
+
+/** Mark yard-sign pins that FormHandler stored as big. */
+async function attachYardSignSize(points: CampaignGeoPoint[]): Promise<CampaignGeoPoint[]> {
+  const yardIds = points.filter((point) => point.kind === 'yard_sign').map((point) => point.source_id);
+  if (yardIds.length === 0) return points;
+  try {
+    const campaign = campaignAdminClient();
+    const big = new Set<string>();
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await campaign
+        .from('yard_signs')
+        .select('id, is_big')
+        .eq('is_big', true)
+        .range(from, from + pageSize - 1);
+      if (error) break;
+      const rows = data ?? [];
+      for (const row of rows) {
+        if (typeof row.id === 'string') big.add(row.id);
+      }
+      if (rows.length < pageSize) break;
+    }
+    if (big.size === 0) return points;
+    return points.map((point) =>
+      point.kind === 'yard_sign' && big.has(point.source_id)
+        ? { ...point, is_big: true }
+        : point,
+    );
+  } catch {
+    return points;
+  }
 }

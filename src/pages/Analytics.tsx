@@ -92,6 +92,7 @@ export default function Analytics() {
       email?: string | null;
       phone?: string | null;
       address?: string | null;
+      is_big?: boolean;
     }>
   >([]);
   const [truncated, setTruncated] = useState(false);

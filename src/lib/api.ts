@@ -136,7 +136,7 @@ export async function fetchAnalytics(
   }
 }
 
-const CAMPAIGN_GEO_KEY = 'campaign_geo_v1';
+const CAMPAIGN_GEO_KEY = 'campaign_geo_v2';
 
 function readCampaignGeoCache(): {
   campaign_geo?: Array<{
@@ -148,6 +148,7 @@ function readCampaignGeoCache(): {
     email?: string | null;
     phone?: string | null;
     address?: string | null;
+    is_big?: boolean;
   }>;
 } | null {
   if (typeof sessionStorage === 'undefined') return null;
@@ -167,6 +168,7 @@ function readCampaignGeoCache(): {
         email?: string | null;
         phone?: string | null;
         address?: string | null;
+        is_big?: boolean;
       }> };
     }
   } catch {
@@ -222,6 +224,7 @@ export async function fetchMapCampaignGeo() {
         email?: string | null;
         phone?: string | null;
         address?: string | null;
+        is_big?: boolean;
       }>;
     }>('/api/voter/map-points', {
       method: 'POST',
@@ -346,6 +349,47 @@ export type VoterPollSite = {
   lng: number | null;
   precinct_names: string | null;
 };
+
+export type PollingCountyRank = {
+  name: string;
+  voters: number;
+};
+
+export type PollingYardGap = {
+  id: number;
+  kind: 'election_day' | 'early_voting';
+  name: string;
+  address_line_1: string | null;
+  city: string | null;
+  zip: string | null;
+  lat: number;
+  lng: number;
+  miles: number | null;
+  nearest_is_big: boolean | null;
+  nearest_name: string | null;
+  nearest_address: string | null;
+  nearest_lat: number | null;
+  nearest_lng: number | null;
+};
+
+export function fetchPollingCounties() {
+  return apiFetch<{ counties: PollingCountyRank[] }>('/api/voter/polling-locations', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'counties' }),
+  });
+}
+
+export function fetchPollingYardGaps(county: string) {
+  return apiFetch<{
+    county: string;
+    yard_sign_count: number;
+    big_yard_sign_count: number;
+    sites: PollingYardGap[];
+  }>('/api/voter/polling-locations', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'yard_gaps', county }),
+  });
+}
 
 export function fetchPollingLocations() {
   return apiFetch<{

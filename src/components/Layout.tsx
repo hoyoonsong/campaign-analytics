@@ -18,6 +18,7 @@ const items: NavItem[] = [
   { to: "/petitions", label: "Petitions" },
   { to: "/tracking", label: "Tracking" },
   { to: "/absentee", label: "Absentee" },
+  { to: "/polling", label: "Polling" },
   { to: "/universes", label: "Universes" },
   { to: "/usage", label: "Usage" },
   { to: "/logs", label: "Logs" },

@@ -11,6 +11,7 @@ const ImportPage = lazy(() => import('./pages/Import'));
 const Petitions = lazy(() => import('./pages/Petitions'));
 const TrackingPolls = lazy(() => import('./pages/TrackingPolls'));
 const Absentee = lazy(() => import('./pages/Absentee'));
+const Polling = lazy(() => import('./pages/Polling'));
 const Universes = lazy(() => import('./pages/Universes'));
 const ContactSuggestions = lazy(() => import('./pages/ContactSuggestions'));
 const Usage = lazy(() => import('./pages/Usage'));
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="/petitions" element={<Petitions />} />
           <Route path="/tracking" element={<TrackingPolls />} />
           <Route path="/absentee" element={<Absentee />} />
+          <Route path="/polling" element={<Polling />} />
           <Route path="/universes" element={<Universes />} />
           <Route path="/usage" element={<Usage />} />
           <Route path="/logs" element={<ActivityLogs />} />

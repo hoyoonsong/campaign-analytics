@@ -8,6 +8,7 @@ export type RawPresencePin = {
   email?: string | null;
   phone?: string | null;
   address?: string | null;
+  is_big?: boolean;
 };
 
 /** Map display kinds — one marker per person. */
@@ -24,6 +25,8 @@ export type PresencePin = {
   address?: string | null;
   /** How many FormHandler yard-sign rows this person has (1+). */
   yard_sign_count?: number;
+  /** True when at least one of those yard signs is marked big. */
+  is_big?: boolean;
 };
 
 function personKey(p: RawPresencePin): string {
@@ -73,6 +76,7 @@ export function collapsePresencePins(raw: RawPresencePin[]): PresencePin[] {
         phone: vol.phone || ysPrimary.phone,
         address: ysPrimary.address || vol.address,
         yard_sign_count: yards.length,
+        is_big: yards.some((yard) => yard.is_big),
       });
       continue;
     }
@@ -88,6 +92,7 @@ export function collapsePresencePins(raw: RawPresencePin[]): PresencePin[] {
         phone: ysPrimary.phone,
         address: ysPrimary.address,
         yard_sign_count: yards.length,
+        is_big: yards.some((yard) => yard.is_big),
       });
       continue;
     }
