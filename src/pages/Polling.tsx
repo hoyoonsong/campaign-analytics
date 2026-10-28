@@ -20,6 +20,7 @@ import { countyKey, pollingKindLabel, type PollMapLocation } from '../lib/pollin
 import { collapsePresencePins, type PresencePin, type RawPresencePin } from '../lib/presencePins';
 
 type KindFilter = 'all' | 'election_day' | 'early_voting';
+type RankMode = 'distance' | 'people';
 
 const KIND_FILTERS: { id: KindFilter; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -40,6 +41,12 @@ function placeLine(site: PollingYardGap): string {
 
 function siteKey(site: PollingYardGap): string {
   return `${site.kind}-${site.id}`;
+}
+
+function peopleLine(count: number, kind: PollingYardGap['kind']): string {
+  const place = kind === 'early_voting' ? 'early-voting site' : 'election-day poll';
+  const noun = count === 1 ? 'person' : 'people';
+  return `Closest ${place} for ${count.toLocaleString()} ${noun}`;
 }
 
 const electionIcon = L.divIcon({
@@ -166,6 +173,7 @@ export default function PollingPage() {
   const [countiesError, setCountiesError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [kind, setKind] = useState<KindFilter>('all');
+  const [rankBy, setRankBy] = useState<RankMode>('distance');
   const [gaps, setGaps] = useState<{
     yard_sign_count: number;
     big_yard_sign_count: number;
@@ -283,9 +291,19 @@ export default function PollingPage() {
 
   const sites = useMemo(() => {
     const rows = gaps?.sites ?? [];
-    if (kind === 'all') return rows;
-    return rows.filter((site) => site.kind === kind);
-  }, [gaps, kind]);
+    const peopleById = new Map(pollLocations.map((site) => [site.id, site.assigned_count]));
+    const filtered = kind === 'all' ? rows : rows.filter((site) => site.kind === kind);
+    const withPeople = filtered.map((site) => ({
+      ...site,
+      people: peopleById.get(site.id) ?? 0,
+    }));
+    if (rankBy === 'people') {
+      return [...withPeople].sort(
+        (a, b) => b.people - a.people || a.name.localeCompare(b.name),
+      );
+    }
+    return withPeople;
+  }, [gaps, kind, pollLocations, rankBy]);
 
   const picked = sites.find((site) => siteKey(site) === pickedKey) ?? sites[0] ?? null;
   const mapPoints = useMemo(() => {
@@ -334,7 +352,7 @@ export default function PollingPage() {
     <div className="space-y-6">
       <PageHeader
         title="Polling"
-        description="Counties with the most people in the voter file first. Open a county to rank its polling locations from furthest to closest yard sign. Select a location to frame it on the map with nearby voters, yard signs, volunteers, and the other polls in that county."
+        description="Counties with the most people in the voter file first. Rank a county’s polling locations by distance from a yard sign, or by how many people are closest to that site. Each person with coordinates is assigned to the nearest election-day poll and the nearest early-voting site in their county. That is distance, not their official precinct."
       />
 
       {countiesError ? <Alert variant="error">{countiesError}</Alert> : null}
@@ -391,14 +409,38 @@ export default function PollingPage() {
                 {selected ? `${selected} County` : 'Polling locations'}
               </h2>
               <p className="text-xs text-slate-500">
-                {gaps
-                  ? `${gaps.yard_sign_count.toLocaleString()} yard signs on the map` +
-                    (gaps.big_yard_sign_count
-                      ? `, ${gaps.big_yard_sign_count.toLocaleString()} big`
-                      : '') +
-                    '. 1 is furthest from a yard sign.'
-                  : '1 is furthest from a yard sign.'}
+                {rankBy === 'people'
+                  ? '1 is where the most people are closest. The same person is counted once for election day and once for early voting.'
+                  : gaps
+                    ? `${gaps.yard_sign_count.toLocaleString()} yard signs on the map` +
+                      (gaps.big_yard_sign_count
+                        ? `, ${gaps.big_yard_sign_count.toLocaleString()} big`
+                        : '') +
+                      '. 1 is furthest from a yard sign.'
+                    : '1 is furthest from a yard sign.'}
               </p>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {(
+                [
+                  ['distance', 'Furthest from a sign'],
+                  ['people', 'Most people'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setRankBy(id)}
+                  className={
+                    'rounded-full px-3 py-1 text-xs font-medium ' +
+                    (rankBy === id
+                      ? 'bg-brand-700 text-white'
+                      : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50')
+                  }
+                >
+                  {label}
+                </button>
+              ))}
             </div>
             <div className="flex flex-wrap gap-1">
               {KIND_FILTERS.map((filter) => (
@@ -523,11 +565,9 @@ export default function PollingPage() {
                             <div className="font-semibold">{site.name}</div>
                             <div>{pollingKindLabel(site.kind)}</div>
                             {selectedPin && placeLine(picked) ? <div>{placeLine(picked)}</div> : null}
-                            {selectedPin ? null : (
-                              <div className="text-slate-500">
-                                {site.assigned_count.toLocaleString()} people matched here
-                              </div>
-                            )}
+                            <div className="text-slate-500">
+                              {peopleLine(site.assigned_count, site.kind)}
+                            </div>
                           </div>
                         </Popup>
                       </Marker>
@@ -544,6 +584,7 @@ export default function PollingPage() {
                           <div className="font-semibold">{picked.name}</div>
                           <div>{pollingKindLabel(picked.kind)}</div>
                           {placeLine(picked) ? <div>{placeLine(picked)}</div> : null}
+                          <div className="text-slate-500">{peopleLine(picked.people, picked.kind)}</div>
                         </div>
                       </Popup>
                     </Marker>
@@ -667,11 +708,16 @@ export default function PollingPage() {
                         <p className="mt-0.5 text-sm text-slate-500">{placeLine(site)}</p>
                       ) : null}
                       <p className="mt-1 text-sm text-slate-700">
+                        <span className="font-medium tabular-nums">
+                          {site.people.toLocaleString()}
+                        </span>
+                        {site.people === 1 ? ' person closest here' : ' people closest here'}
+                        {' · '}
                         {site.miles == null ? (
-                          'No yard signs on the map'
+                          'no yard sign on the map'
                         ) : (
                           <>
-                            <span className="font-medium tabular-nums">{milesText(site.miles)}</span>
+                            <span className="tabular-nums">{milesText(site.miles)}</span>
                             {' from '}
                             {site.nearest_is_big ? 'a big yard sign' : 'a small yard sign'}
                             {site.nearest_name ? ` (${site.nearest_name})` : ''}
