@@ -353,6 +353,7 @@ export type VoterPollSite = {
 export type PollingCountyRank = {
   name: string;
   voters: number;
+  in_file: number;
 };
 
 export type PollingYardGap = {

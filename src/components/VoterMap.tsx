@@ -12,7 +12,7 @@ import type { GeoJsonObject, Feature, FeatureCollection } from 'geojson';
 import 'leaflet/dist/leaflet.css';
 import { COUNTY_CENTROIDS, IDAHO_COUNTIES } from '../lib/idahoCounties';
 import { fetchPollLinks } from '../lib/api';
-import { countyKey, type PollMapLocation } from '../lib/pollingLocations';
+import { countyKey, pollPeopleLine, type PollMapLocation } from '../lib/pollingLocations';
 import { collapsePresencePins, type PresencePin, type RawPresencePin } from '../lib/presencePins';
 import type { CountyCoordPayload } from '../lib/mapCoordsCache';
 import { PollLinkLayer } from './PollLinkLayer';
@@ -560,7 +560,6 @@ function PollPopup({ site }: { site: PollMapLocation }) {
     site.precinct_names && !/^ev$/i.test(site.precinct_names.trim())
       ? site.precinct_names.slice(0, 160)
       : null;
-  const people = site.assigned_count.toLocaleString();
   return (
     <div className="min-w-[180px] space-y-1 text-sm">
       <p
@@ -574,10 +573,7 @@ function PollPopup({ site }: { site: PollMapLocation }) {
       {address ? <p className="text-slate-600">{address}</p> : null}
       {site.county ? <p className="text-slate-600">{site.county} County</p> : null}
       {precincts ? <p className="text-xs text-slate-500">{precincts}</p> : null}
-      <p className="text-xs text-slate-500">
-        Nearest {site.kind === 'early_voting' ? 'early-voting site' : 'election-day poll'} for{' '}
-        {people} {site.assigned_count === 1 ? 'person' : 'people'}
-      </p>
+      <p className="text-xs text-slate-500">{pollPeopleLine(site)}</p>
     </div>
   );
 }

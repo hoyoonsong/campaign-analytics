@@ -16,7 +16,12 @@ import {
 } from '../lib/api';
 import { IDAHO_COUNTIES } from '../lib/idahoCounties';
 import { loadCountyMapCoords, type CountyCoordPayload } from '../lib/mapCoordsCache';
-import { countyKey, pollingKindLabel, type PollMapLocation } from '../lib/pollingLocations';
+import {
+  countyKey,
+  pollPeopleLine,
+  pollingKindLabel,
+  type PollMapLocation,
+} from '../lib/pollingLocations';
 import { collapsePresencePins, type PresencePin, type RawPresencePin } from '../lib/presencePins';
 
 type KindFilter = 'all' | 'election_day' | 'early_voting';
@@ -39,14 +44,8 @@ function placeLine(site: PollingYardGap): string {
     .join(', ');
 }
 
-function siteKey(site: PollingYardGap): string {
+function siteKey(site: { kind: string; id: number }): string {
   return `${site.kind}-${site.id}`;
-}
-
-function peopleLine(count: number, kind: PollingYardGap['kind']): string {
-  const place = kind === 'early_voting' ? 'early-voting site' : 'election-day poll';
-  const noun = count === 1 ? 'person' : 'people';
-  return `Closest ${place} for ${count.toLocaleString()} ${noun}`;
 }
 
 const electionIcon = L.divIcon({
@@ -291,16 +290,24 @@ export default function PollingPage() {
 
   const sites = useMemo(() => {
     const rows = gaps?.sites ?? [];
-    const peopleById = new Map(pollLocations.map((site) => [site.id, site.assigned_count]));
+    const peopleById = new Map(pollLocations.map((site) => [siteKey(site), site]));
     const filtered = kind === 'all' ? rows : rows.filter((site) => site.kind === kind);
-    const withPeople = filtered.map((site) => ({
-      ...site,
-      people: peopleById.get(site.id) ?? 0,
-    }));
+    const withPeople = filtered.map((site) => {
+      const loc = peopleById.get(siteKey(site));
+      const registered = loc?.active_voters ?? null;
+      const inFile = loc?.assigned_count ?? 0;
+      return {
+        ...site,
+        registered,
+        inFile,
+        people: site.kind === 'election_day' && registered != null ? registered : inFile,
+      };
+    });
     if (rankBy === 'people') {
-      return [...withPeople].sort(
-        (a, b) => b.people - a.people || a.name.localeCompare(b.name),
-      );
+      return [...withPeople].sort((a, b) => {
+        if (kind === 'all' && a.kind !== b.kind) return a.kind === 'election_day' ? -1 : 1;
+        return b.people - a.people || a.name.localeCompare(b.name);
+      });
     }
     return withPeople;
   }, [gaps, kind, pollLocations, rankBy]);
@@ -352,7 +359,7 @@ export default function PollingPage() {
     <div className="space-y-6">
       <PageHeader
         title="Polling"
-        description="Counties with the most people in the voter file first. Rank a county’s polling locations by distance from a yard sign, or by how many people are closest to that site. Each person with coordinates is assigned to the nearest election-day poll and the nearest early-voting site in their county. That is distance, not their official precinct."
+        description="Counties are ranked by registered voters on the statewide polling list. Election-day polls use that official precinct total. Early-voting sites have no assigned voter total, so they use people in the file whose nearest site is there. Distance from a yard sign is unchanged."
       />
 
       {countiesError ? <Alert variant="error">{countiesError}</Alert> : null}
@@ -361,7 +368,7 @@ export default function PollingPage() {
         <section className="card overflow-hidden">
           <div className="border-b border-slate-200 px-4 py-3">
             <h2 className="text-sm font-semibold text-slate-900">Counties</h2>
-            <p className="text-xs text-slate-500">Ranked by voters in the file</p>
+            <p className="text-xs text-slate-500">Ranked by registered voters</p>
           </div>
           {countiesLoading ? (
             <div className="p-6">
@@ -391,8 +398,11 @@ export default function PollingPage() {
                         <span className="mr-2 tabular-nums text-xs text-slate-400">{index + 1}</span>
                         {county.name}
                       </span>
-                      <span className="shrink-0 tabular-nums text-xs text-slate-500">
-                        {county.voters.toLocaleString()}
+                      <span className="shrink-0 text-right text-xs text-slate-500">
+                        <span className="block tabular-nums">{county.voters.toLocaleString()}</span>
+                        <span className="block tabular-nums text-[10px] text-slate-400">
+                          {(county.in_file ?? 0).toLocaleString()} in file
+                        </span>
                       </span>
                     </button>
                   </li>
@@ -410,7 +420,11 @@ export default function PollingPage() {
               </h2>
               <p className="text-xs text-slate-500">
                 {rankBy === 'people'
-                  ? '1 is where the most people are closest. The same person is counted once for election day and once for early voting.'
+                  ? kind === 'early_voting'
+                    ? '1 is the early-voting site closest to the most people in the file. The state does not assign a registered-voter total to these sites.'
+                    : kind === 'election_day'
+                      ? '1 has the most registered voters. That is the state’s precinct assignment, already stored with each polling place.'
+                      : 'Election-day polls are ranked by registered voters, then early-voting sites by people in the file.'
                   : gaps
                     ? `${gaps.yard_sign_count.toLocaleString()} yard signs on the map` +
                       (gaps.big_yard_sign_count
@@ -565,9 +579,7 @@ export default function PollingPage() {
                             <div className="font-semibold">{site.name}</div>
                             <div>{pollingKindLabel(site.kind)}</div>
                             {selectedPin && placeLine(picked) ? <div>{placeLine(picked)}</div> : null}
-                            <div className="text-slate-500">
-                              {peopleLine(site.assigned_count, site.kind)}
-                            </div>
+                            <div className="text-slate-500">{pollPeopleLine(site)}</div>
                           </div>
                         </Popup>
                       </Marker>
@@ -584,7 +596,13 @@ export default function PollingPage() {
                           <div className="font-semibold">{picked.name}</div>
                           <div>{pollingKindLabel(picked.kind)}</div>
                           {placeLine(picked) ? <div>{placeLine(picked)}</div> : null}
-                          <div className="text-slate-500">{peopleLine(picked.people, picked.kind)}</div>
+                          <div className="text-slate-500">
+                            {pollPeopleLine({
+                              kind: picked.kind,
+                              assigned_count: picked.inFile,
+                              active_voters: picked.registered,
+                            })}
+                          </div>
                         </div>
                       </Popup>
                     </Marker>
@@ -708,10 +726,11 @@ export default function PollingPage() {
                         <p className="mt-0.5 text-sm text-slate-500">{placeLine(site)}</p>
                       ) : null}
                       <p className="mt-1 text-sm text-slate-700">
-                        <span className="font-medium tabular-nums">
-                          {site.people.toLocaleString()}
-                        </span>
-                        {site.people === 1 ? ' person closest here' : ' people closest here'}
+                        {pollPeopleLine({
+                          kind: site.kind,
+                          assigned_count: site.inFile,
+                          active_voters: site.registered,
+                        })}
                         {' · '}
                         {site.miles == null ? (
                           'no yard sign on the map'

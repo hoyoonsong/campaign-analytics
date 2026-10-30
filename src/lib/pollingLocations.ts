@@ -39,7 +39,22 @@ export type PollMapLocation = {
   lng: number;
   precinct_names: string | null;
   assigned_count: number;
+  active_voters: number | null;
 };
+
+export function pollPeopleLine(site: {
+  kind: PollingKind;
+  assigned_count: number;
+  active_voters?: number | null;
+}): string {
+  if (site.kind === 'election_day' && site.active_voters != null && site.active_voters > 0) {
+    return `${site.active_voters.toLocaleString()} registered voters · ${site.assigned_count.toLocaleString()} in the file live nearest`;
+  }
+  const count = site.assigned_count;
+  const noun = count === 1 ? 'person' : 'people';
+  const place = site.kind === 'early_voting' ? 'early-voting site' : 'election-day poll';
+  return `Closest ${place} for ${count.toLocaleString()} ${noun} in the file`;
+}
 
 export function countyKey(raw: string | null | undefined): string {
   return (raw ?? '')

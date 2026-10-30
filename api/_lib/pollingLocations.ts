@@ -607,11 +607,12 @@ export async function listPollingLocations(voter: SupabaseClient) {
     lng: number | null;
     precinct_names: string | null;
     assigned_count: number | null;
+    active_voters: number | null;
     status: string | null;
   }>(
     voter,
     'polling_locations',
-    'id, kind, name, address_line_1, city, zip, county, lat, lng, precinct_names, assigned_count, status',
+    'id, kind, name, address_line_1, city, zip, county, lat, lng, precinct_names, assigned_count, active_voters, status',
   );
   const active = rows.filter((row) => isActive(row.status));
   const locations = active
@@ -628,6 +629,10 @@ export async function listPollingLocations(voter: SupabaseClient) {
       lng: row.lng as number,
       precinct_names: row.precinct_names,
       assigned_count: row.assigned_count ?? 0,
+      active_voters:
+        row.kind === 'election_day' && row.active_voters != null && row.active_voters > 0
+          ? row.active_voters
+          : null,
     }));
   return {
     locations,
@@ -763,28 +768,51 @@ async function loadYardSigns(): Promise<YardSignPoint[]> {
 }
 
 export async function pollingCountyRanks(voter: SupabaseClient) {
-  const { data, error } = await voter.rpc('county_voter_counts');
+  const [{ data, error }, sites] = await Promise.all([
+    voter.rpc('county_voter_counts'),
+    selectAll<{
+      county: string | null;
+      kind: string;
+      active_voters: number | null;
+      status: string | null;
+    }>(voter, 'polling_locations', 'county, kind, active_voters, status'),
+  ]);
   if (error) throw pollingDbError(error.message);
   const known = new Set(
     COUNTY_FEATURES.map((feature) => countyKey(feature.properties?.name)).filter(Boolean),
   );
-  const buckets = new Map<string, { name: string; voters: number }>();
+  const inFile = new Map<string, { name: string; voters: number }>();
   for (const row of (data ?? []) as Array<{ county?: string | null; voters?: number | string }>) {
     const key = countyKey(row.county);
     if (!key || !known.has(key)) continue;
     const name = displayCounty(row.county);
     const voters = Number(row.voters) || 0;
-    const prev = buckets.get(key);
+    const prev = inFile.get(key);
     if (prev) prev.voters += voters;
-    else buckets.set(key, { name, voters });
+    else inFile.set(key, { name, voters });
   }
-  const pollCounties = await selectAll<{ county: string | null }>(voter, 'polling_locations', 'county');
-  for (const row of pollCounties) {
+  const registered = new Map<string, { name: string; voters: number }>();
+  for (const row of sites) {
+    if (row.kind !== 'election_day' || !isActive(row.status)) continue;
     const key = countyKey(row.county);
-    if (!key || !known.has(key) || buckets.has(key)) continue;
-    buckets.set(key, { name: displayCounty(row.county), voters: 0 });
+    if (!key || !known.has(key)) continue;
+    const prev = registered.get(key);
+    const voters = Number(row.active_voters) || 0;
+    if (prev) prev.voters += voters;
+    else registered.set(key, { name: displayCounty(row.county), voters });
   }
-  const counties = [...buckets.values()].sort((a, b) => b.voters - a.voters || a.name.localeCompare(b.name));
+  const keys = new Set([...inFile.keys(), ...registered.keys()]);
+  const counties = [...keys]
+    .map((key) => {
+      const official = registered.get(key)?.voters ?? 0;
+      const file = inFile.get(key)?.voters ?? 0;
+      return {
+        name: registered.get(key)?.name ?? inFile.get(key)?.name ?? displayCounty(key),
+        voters: official > 0 ? official : file,
+        in_file: file,
+      };
+    })
+    .sort((a, b) => b.voters - a.voters || a.name.localeCompare(b.name));
   return { counties };
 }
 
